@@ -183,10 +183,28 @@ Syntax `${PG_SCHEMA:-public}` berarti kalau env kosong, pakai `public`.
 - Jika `true`, truncate memakai `CASCADE`.
 - Jangan aktifkan tanpa approval DBA.
 
+`allow_swap`
+
+- Default `false`.
+- Jika `false`, execute mode `swap` akan di-skip kecuali command memakai `--force`.
+- Ini guard untuk RDS karena `swap` membuat staging table, index staging, WAL/temp, dan old table selama transaksi.
+
+`max_swap_table_bytes`
+
+- Batas ukuran table PostgreSQL untuk mode `swap`.
+- Bisa angka byte atau string seperti `20GiB`.
+- Jika ukuran table melewati batas, mode `swap` di-skip kecuali memakai `--force`.
+
+`swap_space_multiplier`
+
+- Multiplier estimasi storage ekstra untuk dry-run/log swap.
+- Default `2.5`, karena staging table plus index/WAL/temp bisa lebih besar dari data heap saja.
+
 `keep_old_after_swap`
 
 - Jika `true`, table lama hasil swap tidak langsung dihapus.
-- Rekomendasi production: `true`.
+- Rekomendasi default: `false` agar storage RDS cepat balik setelah swap.
+- Jika butuh rollback cepat via old table, aktifkan hanya saat free storage cukup.
 
 `copy_null`
 
@@ -214,7 +232,10 @@ sync:
   exact_count_after_load: false
   parallel_workers: 1
   truncate_cascade: false
-  keep_old_after_swap: true
+  allow_swap: false
+  max_swap_table_bytes: 20GiB
+  swap_space_multiplier: 2.5
+  keep_old_after_swap: false
   pg_lock_timeout: 5s
   pg_statement_timeout: '0'
 ```
@@ -311,7 +332,8 @@ sync:
   fast_count: true
   exact_count_after_load: false
   parallel_workers: 1
-  keep_old_after_swap: true
+  allow_swap: false
+  keep_old_after_swap: false
 ```
 
 ## Contoh Config Production
@@ -326,6 +348,9 @@ sync:
   parallel_workers: 1
   analyze_after_load: true
   truncate_cascade: false
-  keep_old_after_swap: true
+  allow_swap: false
+  max_swap_table_bytes: 20GiB
+  swap_space_multiplier: 2.5
+  keep_old_after_swap: false
   pg_lock_timeout: 5s
 ```

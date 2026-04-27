@@ -50,6 +50,22 @@ def fast_count_rows(cur, schema: str, table: str) -> int | None:
     return int(row[0]) if row and row[0] is not None else None
 
 
+def total_relation_size_bytes(cur, schema: str, table: str) -> int | None:
+    cur.execute(
+        """
+        SELECT pg_total_relation_size(c.oid)
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = %s
+          AND c.relname = %s
+          AND c.relkind IN ('r', 'p', 'm')
+        """,
+        (schema, table),
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
 def list_tables(cur, schema: str) -> list[str]:
     cur.execute(
         """

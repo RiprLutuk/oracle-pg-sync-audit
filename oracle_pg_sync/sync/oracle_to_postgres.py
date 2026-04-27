@@ -133,9 +133,10 @@ class OracleToPostgresSync:
                         return result
 
                     pg_columns = [pg_col for pg_col, _ in mapping]
+                    swap_size = self._swap_size_estimate(pcur, table.schema, table.table) if mode == "swap" else None
                     if dry_run:
                         result.status = "DRY_RUN"
-                        result.message = f"akan load {len(pg_columns)} kolom ke {table.fqname}"
+                        result.message = self._dry_run_message(table.fqname, mode, len(pg_columns), swap_size)
                         return result
 
                     if mode == "truncate":
@@ -146,6 +147,12 @@ class OracleToPostgresSync:
                         )
                         rows = self._sync_truncate(ocur, pcur, owner, table.schema, table.table, mapping, table_cfg.where)
                     elif mode == "swap":
+                        guard_message = self._swap_guard_message(table.fqname, swap_size, force=force)
+                        if guard_message:
+                            result.status = "SKIPPED"
+                            result.message = guard_message
+                            return result
+                        self._log_swap_risk(table.fqname, swap_size)
                         rows = self._sync_swap(ocur, pcur, owner, table.schema, table.table, mapping, table_cfg.where)
                     elif mode == "append":
                         rows = self._copy_oracle_to_pg(ocur, pcur, owner, table.schema, table.table, table.table, mapping, table_cfg.where)
@@ -307,6 +314,73 @@ class OracleToPostgresSync:
             if oracle_candidate in oracle_colset:
                 mapping.append((pg_name, oracle_name(oracle_candidate)))
         return mapping
+
+    def _swap_size_estimate(self, pcur, schema: str, table: str) -> int | None:
+        try:
+            return postgres.total_relation_size_bytes(pcur, schema, table)
+        except Exception:
+            self.logger.debug("Cannot estimate PostgreSQL relation size for %s.%s", schema, table, exc_info=True)
+            return None
+
+    def _dry_run_message(self, table_name: str, mode: str, column_count: int, swap_size: int | None) -> str:
+        message = f"akan load {column_count} kolom ke {table_name}"
+        if mode != "swap":
+            return message
+        estimate = self._estimated_swap_space(swap_size)
+        if estimate is None:
+            return message + "; mode swap butuh staging table, index staging, WAL/temp, dan lock singkat saat rename"
+        return (
+            message
+            + f"; mode swap estimasi butuh storage tambahan sekitar {self._format_bytes(estimate)}"
+            + f" dari table saat ini {self._format_bytes(swap_size)}"
+        )
+
+    def _swap_guard_message(self, table_name: str, swap_size: int | None, *, force: bool) -> str:
+        if not self.config.sync.allow_swap and not force:
+            return (
+                "mode swap dinonaktifkan untuk execute karena bisa memenuhi storage/temp RDS; "
+                "pakai sync.allow_swap=true atau --force jika sudah review kapasitas"
+            )
+        max_bytes = self.config.sync.max_swap_table_bytes
+        if max_bytes is not None and swap_size is not None and swap_size > int(max_bytes) and not force:
+            return (
+                f"mode swap di-skip: size {table_name} {self._format_bytes(swap_size)} "
+                f"melebihi max_swap_table_bytes {self._format_bytes(int(max_bytes))}"
+            )
+        return ""
+
+    def _log_swap_risk(self, table_name: str, swap_size: int | None) -> None:
+        estimate = self._estimated_swap_space(swap_size)
+        if estimate is None:
+            self.logger.warning(
+                "Mode swap untuk %s membuat staging table, index staging, WAL/temp, dan old table selama transaksi.",
+                table_name,
+            )
+            return
+        self.logger.warning(
+            "Mode swap untuk %s: current table=%s, perkiraan storage tambahan=%s. "
+            "Pastikan free storage RDS cukup.",
+            table_name,
+            self._format_bytes(swap_size),
+            self._format_bytes(estimate),
+        )
+
+    def _estimated_swap_space(self, swap_size: int | None) -> int | None:
+        if swap_size is None:
+            return None
+        return int(swap_size * float(self.config.sync.swap_space_multiplier or 2.5))
+
+    @staticmethod
+    def _format_bytes(value: int | None) -> str:
+        if value is None:
+            return "unknown"
+        units = ["B", "KiB", "MiB", "GiB", "TiB"]
+        size = float(value)
+        for unit in units:
+            if size < 1024 or unit == units[-1]:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{value} B"
 
 
 def table_ident(schema: str, table: str):

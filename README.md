@@ -157,7 +157,7 @@ Semua output masuk ke `reports/`:
 ## Mode Sync
 
 - `truncate`: truncate target lalu load ulang. Ini default untuk menjaga object table existing seperti index, trigger, grants, view/materialized view dependency.
-- `swap`: create `__load`, copy data, verify rowcount, lalu rename staging menjadi live table. Tidak default karena bisa butuh storage ekstra dan dependency by OID bisa terdampak.
+- `swap`: create `__load`, copy data, verify rowcount, lalu rename staging menjadi live table. Tidak default dan execute di-guard oleh `allow_swap` karena bisa membuat storage/temp RDS penuh dan dependency by OID bisa terdampak.
 - `append`: insert data tanpa hapus data lama.
 - `upsert`: load ke staging lalu `INSERT ... ON CONFLICT`, wajib isi `key_columns`.
 - `delete`: khusus PostgreSQL ke Oracle, `DELETE` target lalu insert ulang dalam transaction.
@@ -170,7 +170,9 @@ Oracle ke PostgreSQL memakai PostgreSQL `COPY FROM STDIN`. PostgreSQL ke Oracle 
 - Default `parallel_workers: 1`, `fast_count: true`, dan `exact_count_after_load: false` supaya tidak terlalu berat di client/server.
 - PostgreSQL `pg_lock_timeout: 5s` membuat sync gagal cepat jika table sedang terkunci, bukan menunggu lock lama.
 - Jika struktur mismatch fatal, table di-skip kecuali pakai `--force`.
-- `swap` menyimpan old table jika `keep_old_after_swap: true`.
+- `swap` dinonaktifkan untuk execute kecuali `sync.allow_swap: true` atau command memakai `--force`.
+- `swap` memakai estimasi `pg_total_relation_size` dan `max_swap_table_bytes` untuk mencegah staging table besar jalan tanpa sadar.
+- `keep_old_after_swap: false` direkomendasikan di RDS agar storage cepat balik setelah swap selesai.
 - Jangan aktifkan `truncate_cascade` tanpa approval DBA.
 - Exact count (`--exact-count`) memakai `SELECT COUNT(1)` dan bisa berat di table besar.
 - Untuk table besar, gunakan `fast_count: true` saat audit dan jalankan exact verification hanya saat window maintenance.

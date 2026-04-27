@@ -23,6 +23,9 @@ postgres:
   database: appdb
   user: app
   password: REPLACE_ME
+sync:
+  allow_swap: false
+  max_swap_table_bytes: 10GiB
 tables:
   - name: public.sample_customer
     mode: truncate
@@ -34,6 +37,8 @@ tables:
 
         self.assertEqual(config.postgres.schema, "public")
         self.assertTrue(config.sync.dry_run)
+        self.assertFalse(config.sync.allow_swap)
+        self.assertEqual(config.sync.max_swap_table_bytes, 10 * 1024**3)
         self.assertEqual(config.table_config("sample_customer").mode, "truncate")
 
 

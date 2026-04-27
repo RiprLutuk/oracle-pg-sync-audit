@@ -267,7 +267,9 @@ python -m oracle_pg_sync report --config config.yaml
 - Verify rowcount staging.
 - Rename live table menjadi old table.
 - Rename staging menjadi live table.
-- Tidak default karena butuh storage staging/old table dan dependency by OID bisa terdampak.
+- Tidak default karena butuh storage staging, index staging, WAL/temp, dan old table selama transaksi.
+- Execute di-skip kecuali `sync.allow_swap: true` atau command memakai `--force`.
+- Dry-run menampilkan estimasi storage tambahan jika ukuran table bisa dibaca dari PostgreSQL.
 - Saat ini hanya aktif untuk Oracle ke PostgreSQL.
 
 `append`

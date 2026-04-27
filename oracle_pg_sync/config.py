@@ -9,6 +9,7 @@ from typing import Any
 
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)(?::-(.*?))?\}")
+_SIZE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([KMGT]?I?B?)?\s*$", re.IGNORECASE)
 
 
 @dataclass
@@ -86,6 +87,9 @@ class SyncConfig:
     build_indexes_on_staging: bool = True
     analyze_after_load: bool = True
     truncate_cascade: bool = False
+    allow_swap: bool = False
+    max_swap_table_bytes: int | None = None
+    swap_space_multiplier: float = 2.5
     keep_old_after_swap: bool = False
     copy_null: str = ""
     pg_lock_timeout: str = "5s"
@@ -172,7 +176,10 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
     raw = _expand_env(raw_pre_env)
     oracle = OracleConfig(**(raw.get("oracle") or {}))
     postgres = PostgresConfig(**(raw.get("postgres") or {}))
-    sync = SyncConfig(**(raw.get("sync") or {}))
+    sync_raw = raw.get("sync") or {}
+    if "max_swap_table_bytes" in sync_raw:
+        sync_raw["max_swap_table_bytes"] = _parse_size_bytes(sync_raw["max_swap_table_bytes"])
+    sync = SyncConfig(**sync_raw)
     reports_raw = raw.get("reports") or {}
     reports = ReportsConfig(output_dir=Path(reports_raw.get("output_dir", "reports")))
     tables = [
@@ -199,3 +206,37 @@ def mask_secret(value: str | None) -> str:
     if len(value) <= 4:
         return "****"
     return value[:2] + "****" + value[-2:]
+
+
+def _parse_size_bytes(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    match = _SIZE_PATTERN.match(str(value))
+    if not match:
+        raise ValueError(f"Invalid size value: {value!r}")
+    amount = float(match.group(1))
+    unit = (match.group(2) or "B").upper()
+    multipliers = {
+        "B": 1,
+        "K": 1024,
+        "KB": 1024,
+        "KI": 1024,
+        "KIB": 1024,
+        "M": 1024**2,
+        "MB": 1024**2,
+        "MI": 1024**2,
+        "MIB": 1024**2,
+        "G": 1024**3,
+        "GB": 1024**3,
+        "GI": 1024**3,
+        "GIB": 1024**3,
+        "T": 1024**4,
+        "TB": 1024**4,
+        "TI": 1024**4,
+        "TIB": 1024**4,
+    }
+    return int(amount * multipliers[unit])

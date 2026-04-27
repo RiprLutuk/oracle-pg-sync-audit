@@ -32,7 +32,10 @@ sync:
   build_indexes_on_staging: true
   analyze_after_load: true
   truncate_cascade: false
-  keep_old_after_swap: true
+  allow_swap: false
+  max_swap_table_bytes: 20GiB
+  swap_space_multiplier: 2.5
+  keep_old_after_swap: false
   copy_null: ""
   pg_lock_timeout: 5s
   pg_statement_timeout: "0"
