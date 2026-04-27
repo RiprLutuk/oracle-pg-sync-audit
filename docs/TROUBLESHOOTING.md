@@ -24,7 +24,7 @@ pip install -r requirements.txt
 
 ## DPI-1047 atau Oracle Client Library Tidak Ketemu
 
-Jika memakai thick mode, pastikan Oracle Instant Client terinstall dan `.env` berisi:
+Jika memakai thick mode, pastikan Oracle Instant Client terinstall. Ikuti [Oracle Client Install](ORACLE_CLIENT_INSTALL.md), lalu pastikan `.env` berisi:
 
 ```dotenv
 ORACLE_CLIENT_LIB_DIR=/opt/oracle/instantclient_23_9

@@ -44,7 +44,7 @@ Project memakai dua sumber config:
 `ORACLE_SCHEMA`
 
 - Owner schema Oracle sumber.
-- Contoh: `PRD_AMSPBRIM`.
+- Contoh: `APP_SCHEMA`.
 
 `ORACLE_CLIENT_LIB_DIR`
 

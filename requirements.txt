@@ -1,3 +1,5 @@
+# Python dependencies only.
+# Oracle Instant Client is a system dependency; see docs/ORACLE_CLIENT_INSTALL.md.
 oracledb>=2.4.1
 psycopg[binary]>=3.2.3
 python-dotenv>=1.0.1

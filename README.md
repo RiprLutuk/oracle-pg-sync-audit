@@ -9,6 +9,7 @@ Project ini menyatukan audit metadata, compare rowcount, sync data Oracle ke Pos
 - [Production Runbook](docs/PRODUCTION_RUNBOOK.md): alur audit, dry-run, eksekusi, validasi, rollback, dan checklist produksi.
 - [Report Reference](docs/REPORT_REFERENCE.md): arti setiap file report dan cara membaca status `MATCH`, `WARNING`, `MISMATCH`, `MISSING`.
 - [Troubleshooting](docs/TROUBLESHOOTING.md): error umum Oracle, PostgreSQL, dependency, rowcount, dan sync.
+- [Oracle Client Install](docs/ORACLE_CLIENT_INSTALL.md): cara install Oracle Instant Client 23.9 untuk thick mode.
 - [Developer Guide](docs/DEVELOPER_GUIDE.md): struktur kode, test, dan cara menambah fitur.
 
 ## Tujuan
@@ -56,7 +57,7 @@ Atau install sebagai package lokal supaya command `oracle-pg-sync-audit` tersedi
 pip install -e ".[dev]"
 ```
 
-Jika memakai Oracle Instant Client thick mode, isi `ORACLE_CLIENT_LIB_DIR` di `.env`.
+Jika memakai Oracle Instant Client thick mode, ikuti [Oracle Client Install](docs/ORACLE_CLIENT_INSTALL.md), lalu isi `ORACLE_CLIENT_LIB_DIR` di `.env`.
 
 ## Setup Config
 
