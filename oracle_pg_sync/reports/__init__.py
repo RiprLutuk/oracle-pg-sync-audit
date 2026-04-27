@@ -11,10 +11,13 @@ def write_audit_reports(
     type_mismatch_rows: list[dict],
     dependency_rows: list[dict],
     sync_rows: list[dict] | None = None,
+    sql_suggestions_path: Path | None = None,
+    suggest_drop: bool = False,
 ) -> None:
     from oracle_pg_sync.reports.writer_csv import write_csv
     from oracle_pg_sync.reports.writer_excel import write_inventory_xlsx
     from oracle_pg_sync.reports.writer_html import write_html_report
+    from oracle_pg_sync.reports.writer_sql import write_schema_suggestions
 
     report_dir.mkdir(parents=True, exist_ok=True)
     write_csv(report_dir / "inventory_summary.csv", inventory_rows)
@@ -22,6 +25,11 @@ def write_audit_reports(
     write_csv(report_dir / "column_diff.csv", column_diff_rows)
     write_csv(report_dir / "type_mismatch.csv", type_mismatch_rows)
     write_csv(report_dir / "object_dependency_summary.csv", dependency_rows)
+    write_schema_suggestions(
+        sql_suggestions_path or report_dir / "schema_suggestions.sql",
+        column_diff_rows,
+        suggest_drop=suggest_drop,
+    )
     if sync_rows is not None:
         write_csv(report_dir / "sync_result.csv", sync_rows)
     write_html_report(

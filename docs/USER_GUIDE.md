@@ -104,7 +104,7 @@ tables:
     key_columns: [customer_id]
 ```
 
-Nama table boleh `ADDRESS` atau `public.ADDRESS`. Jika schema tidak disebut, default memakai `postgres.schema`.
+Nama table boleh `sample_customer` atau `public.sample_customer`. Jika schema tidak disebut, default memakai `postgres.schema`.
 
 `config.yaml` bawaan sudah diisi dari script lama di folder `example/`:
 
@@ -133,10 +133,12 @@ Jalankan audit metadata dan rowcount:
 python -m oracle_pg_sync audit --config config.yaml
 ```
 
+Jika `tables` di config kosong, audit otomatis mengambil semua table dari PostgreSQL schema yang diset di config.
+
 Audit table tertentu:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --tables ADDRESS HOUSEMASTER
+python -m oracle_pg_sync audit --config config.yaml --tables sample_customer sample_order
 ```
 
 Gunakan fast count untuk table besar:
@@ -151,6 +153,19 @@ Gunakan exact count hanya jika siap dengan query berat:
 python -m oracle_pg_sync audit --config config.yaml --exact-count
 ```
 
+Untuk membuat SQL suggestion seperti script `verify_oracle_pg.py` lama:
+
+```bash
+python -m oracle_pg_sync audit --config config.yaml --sql-out reports/schema_suggestions.sql
+python -m oracle_pg_sync audit --config config.yaml --suggest-drop
+```
+
+Untuk audit parallel, naikkan worker secara sadar karena setiap worker membuka koneksi Oracle dan PostgreSQL:
+
+```bash
+python -m oracle_pg_sync audit --config config.yaml --workers 4 --fast-count
+```
+
 ## 7. Baca Hasil Audit
 
 File utama:
@@ -160,6 +175,7 @@ reports/inventory_summary.csv
 reports/report.html
 reports/column_diff.csv
 reports/type_mismatch.csv
+reports/schema_suggestions.sql
 ```
 
 Interpretasi cepat:
@@ -174,13 +190,13 @@ Interpretasi cepat:
 Secara default sync aman karena dry-run. Command ini belum mengubah data:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables ADDRESS
+python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer
 ```
 
 Reverse sync PostgreSQL ke Oracle juga dry-run secara default:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables ADDRESS --mode truncate
+python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate
 ```
 
 Lihat hasilnya di:
@@ -197,14 +213,14 @@ Status `DRY_RUN` berarti tool hanya melakukan precheck dan memberi tahu apa yang
 Eksekusi sungguhan wajib pakai `--execute`:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables ADDRESS --execute
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables ADDRESS --mode truncate --execute
+python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --execute
+python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate --execute
 ```
 
 Jika struktur mismatch, table akan di-skip. Pakai `--force` hanya setelah DBA menyetujui risiko:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables ADDRESS --execute --force
+python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --execute --force
 ```
 
 ## 10. Generate Report Ulang

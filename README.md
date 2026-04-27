@@ -72,11 +72,12 @@ Contoh table config:
 
 ```yaml
 tables:
-  - name: public.ADDRESS
-    mode: swap
-    key_columns: [ADDRESS_ID]
-  - name: public.HOUSEMASTER
+  - name: public.sample_customer
     mode: truncate
+    key_columns: [customer_id]
+  - name: public.sample_order
+    mode: truncate
+    key_columns: [order_id]
 ```
 
 Rename column Oracle ke PostgreSQL:
@@ -87,7 +88,7 @@ rename_columns:
     legacy_status: status
 ```
 
-Daftar `tables` di `config.yaml` dan `config.yaml.example` sudah dimigrasikan dari `example/ora2pg.py` dan `example/pg2ora.py`, bukan sample dua table.
+Daftar `tables` real disimpan di file lokal `config.yaml` atau `configs/tables.yaml` dan tidak ikut Git. File `*.example` berisi dummy supaya aman dipublish.
 
 ## Command
 
@@ -95,26 +96,29 @@ Audit metadata, rowcount, dependency:
 
 ```bash
 python -m oracle_pg_sync audit --config config.yaml
-python -m oracle_pg_sync audit --config config.yaml --tables ADDRESS HOUSEMASTER
+python -m oracle_pg_sync audit --config config.yaml --tables sample_customer sample_order
+python -m oracle_pg_sync audit --config config.yaml --suggest-drop --sql-out reports/schema_suggestions.sql
 ```
+
+Kalau `tables` kosong, command `audit` otomatis mengambil semua table dari PostgreSQL schema di config, sama seperti script `example/verify_oracle_pg.py` lama. Hasil audit juga membuat `reports/schema_suggestions.sql` berisi saran `ALTER TABLE ADD COLUMN`; opsi `--suggest-drop` menambahkan saran `DROP COLUMN` untuk kolom yang hanya ada di PostgreSQL.
 
 Sync Oracle ke PostgreSQL dry-run, default aman. Default mode sekarang `truncate` supaya index, trigger, grants, view/materialized view dependency tetap nempel ke table yang sama dan tidak membuat staging table besar:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables ADDRESS
+python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer
 ```
 
 Sync PostgreSQL ke Oracle dry-run:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables ADDRESS --mode truncate
+python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate
 ```
 
 Eksekusi sync sungguhan:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables ADDRESS --execute
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables ADDRESS --mode truncate --execute
+python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --execute
+python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate --execute
 ```
 
 Generate ulang HTML dari CSV:

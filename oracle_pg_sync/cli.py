@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from oracle_pg_sync.config import AppConfig, load_config
@@ -22,6 +23,9 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--tables", nargs="*", help="Override table list")
     audit.add_argument("--fast-count", action="store_true", help="Use statistic count")
     audit.add_argument("--exact-count", action="store_true", help="Use SELECT COUNT(1)")
+    audit.add_argument("--workers", type=int, default=1, help="Parallel audit workers. Default 1 agar ringan")
+    audit.add_argument("--suggest-drop", action="store_true", help="Include DROP COLUMN suggestions for PG-only columns")
+    audit.add_argument("--sql-out", help="Path output SQL suggestion. Default: reports/schema_suggestions.sql")
 
     sync = sub.add_parser("sync", help="Sync data antar Oracle dan PostgreSQL")
     _add_common_args(sync)
@@ -52,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     all_cmd.add_argument("--force", action="store_true", help="Tetap sync walaupun struktur mismatch")
     all_cmd.add_argument("--fast-count", action="store_true", help="Use statistic count")
     all_cmd.add_argument("--exact-count", action="store_true", help="Use SELECT COUNT(1)")
+    all_cmd.add_argument("--workers", type=int, default=1, help="Parallel audit workers. Default 1 agar ringan")
+    all_cmd.add_argument("--suggest-drop", action="store_true", help="Include DROP COLUMN suggestions for PG-only columns")
+    all_cmd.add_argument("--sql-out", help="Path output SQL suggestion. Default: reports/schema_suggestions.sql")
 
     return parser
 
@@ -75,19 +82,24 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "fast_count", False):
         config.sync.fast_count = True
 
+    if not tables and args.command == "audit":
+        tables = _discover_postgres_tables(config, logger)
+
     if not tables and args.command != "report":
         raise SystemExit("Tidak ada table target. Isi config.tables atau pakai --tables.")
 
     if args.command == "audit":
         from oracle_pg_sync.reports import write_audit_reports
 
-        audit_result = run_audit(config, tables, logger)
+        audit_result = run_audit(config, tables, logger, workers=args.workers)
         write_audit_reports(
             report_dir,
             inventory_rows=audit_result.inventory_rows,
             column_diff_rows=audit_result.column_diff_rows,
             type_mismatch_rows=audit_result.type_mismatch_rows,
             dependency_rows=audit_result.dependency_rows,
+            sql_suggestions_path=_sql_suggestions_path(report_dir, getattr(args, "sql_out", None)),
+            suggest_drop=args.suggest_drop,
         )
         logger.info("Audit selesai. Report ada di %s", report_dir)
         return 0
@@ -127,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         from oracle_pg_sync.reports.writer_csv import write_csv
 
         logger.info("Step 1/3 audit awal")
-        run_audit(config, tables, logger)
+        run_audit(config, tables, logger, workers=args.workers)
         logger.info("Step 2/3 sync direction=%s", direction)
         sync_rows = [
             result.as_row()
@@ -140,13 +152,15 @@ def main(argv: list[str] | None = None) -> int:
         ]
         write_csv(report_dir / "sync_result.csv", sync_rows)
         logger.info("Step 3/3 audit ulang dan report")
-        audit_result = run_audit(config, tables, logger)
+        audit_result = run_audit(config, tables, logger, workers=args.workers)
         write_audit_reports(
             report_dir,
             inventory_rows=audit_result.inventory_rows,
             column_diff_rows=audit_result.column_diff_rows,
             type_mismatch_rows=audit_result.type_mismatch_rows,
             dependency_rows=audit_result.dependency_rows,
+            sql_suggestions_path=_sql_suggestions_path(report_dir, getattr(args, "sql_out", None)),
+            suggest_drop=args.suggest_drop,
             sync_rows=sync_rows,
         )
         return 1 if any(row["status"] == "FAILED" for row in sync_rows) else 0
@@ -154,60 +168,128 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
-def run_audit(config: AppConfig, tables: list[str], logger: logging.Logger):
+def run_audit(config: AppConfig, tables: list[str], logger: logging.Logger, *, workers: int = 1):
     from oracle_pg_sync.db import oracle, postgres
-    from oracle_pg_sync.metadata.compare import AuditResult, compare_table_metadata
-    from oracle_pg_sync.metadata.oracle_metadata import fetch_table_metadata as fetch_oracle_metadata
-    from oracle_pg_sync.metadata.postgres_metadata import fetch_table_metadata as fetch_pg_metadata
+    from oracle_pg_sync.metadata.compare import AuditResult
 
     inventory_rows: list[dict] = []
     column_diff_rows: list[dict] = []
     type_mismatch_rows: list[dict] = []
     dependency_rows: list[dict] = []
-    owner = config.oracle.schema
 
-    with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
-        with ocon.cursor() as ocur, pcon.cursor() as pcur:
-            for table_name in tables:
-                table = split_schema_table(table_name, config.postgres.schema)
-                logger.info("Audit %s", table.fqname)
+    worker_count = max(1, int(workers or 1))
+    if worker_count > 1:
+        logger.info("Audit parallel workers=%s", worker_count)
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(_audit_table_with_new_connections, config, table_name, logger): table_name
+                for table_name in tables
+            }
+            for future in as_completed(futures):
                 try:
-                    oracle_meta = fetch_oracle_metadata(
-                        ocur,
-                        owner=owner,
-                        table=table.table,
-                        fast_count=config.sync.fast_count,
-                    )
-                    pg_meta = fetch_pg_metadata(
-                        pcur,
-                        schema=table.schema,
-                        table=table.table,
-                        fast_count=config.sync.fast_count,
-                    )
-                    inventory, diffs, mismatches = compare_table_metadata(
-                        table_name=table.fqname,
-                        config=config,
-                        oracle_meta=oracle_meta,
-                        postgres_meta=pg_meta,
-                    )
-                    inventory_rows.append(inventory)
-                    column_diff_rows.extend(diffs)
-                    type_mismatch_rows.extend(mismatches)
-                    dependency_rows.extend(oracle.dependency_rows(ocur, owner, [table.table]))
-                    dependency_rows.extend(postgres.dependency_rows(pcur, table.schema, table.table))
+                    result = future.result()
                 except Exception as exc:
+                    table = split_schema_table(futures[future], config.postgres.schema)
                     logger.exception("Audit failed for %s", table.fqname)
-                    inventory_rows.append(
+                    result = (
                         {
                             "table_name": table.fqname,
                             "oracle_exists": "",
                             "postgres_exists": "",
                             "status": "MISMATCH",
                             "error": str(exc),
-                        }
+                        },
+                        [],
+                        [],
+                        [],
+                    )
+                _merge_audit_result(result, inventory_rows, column_diff_rows, type_mismatch_rows, dependency_rows)
+    else:
+        with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+            with ocon.cursor() as ocur, pcon.cursor() as pcur:
+                for table_name in tables:
+                    _merge_audit_result(
+                        _audit_table(config, table_name, ocur, pcur, logger),
+                        inventory_rows,
+                        column_diff_rows,
+                        type_mismatch_rows,
+                        dependency_rows,
                     )
 
     return AuditResult(inventory_rows, column_diff_rows, type_mismatch_rows, dependency_rows)
+
+
+def _audit_table_with_new_connections(
+    config: AppConfig,
+    table_name: str,
+    logger: logging.Logger,
+) -> tuple[dict, list[dict], list[dict], list[dict]]:
+    from oracle_pg_sync.db import oracle, postgres
+
+    with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+        with ocon.cursor() as ocur, pcon.cursor() as pcur:
+            return _audit_table(config, table_name, ocur, pcur, logger)
+
+
+def _audit_table(config: AppConfig, table_name: str, ocur, pcur, logger: logging.Logger) -> tuple[dict, list[dict], list[dict], list[dict]]:
+    from oracle_pg_sync.db import oracle, postgres
+    from oracle_pg_sync.metadata.compare import compare_table_metadata
+    from oracle_pg_sync.metadata.oracle_metadata import fetch_table_metadata as fetch_oracle_metadata
+    from oracle_pg_sync.metadata.postgres_metadata import fetch_table_metadata as fetch_pg_metadata
+
+    owner = config.oracle.schema
+    table = split_schema_table(table_name, config.postgres.schema)
+    logger.info("Audit %s", table.fqname)
+    try:
+        oracle_meta = fetch_oracle_metadata(
+            ocur,
+            owner=owner,
+            table=table.table,
+            fast_count=config.sync.fast_count,
+        )
+        pg_meta = fetch_pg_metadata(
+            pcur,
+            schema=table.schema,
+            table=table.table,
+            fast_count=config.sync.fast_count,
+        )
+        inventory, diffs, mismatches = compare_table_metadata(
+            table_name=table.fqname,
+            config=config,
+            oracle_meta=oracle_meta,
+            postgres_meta=pg_meta,
+        )
+        dependencies = oracle.dependency_rows(ocur, owner, [table.table])
+        dependencies.extend(postgres.dependency_rows(pcur, table.schema, table.table))
+        return inventory, diffs, mismatches, dependencies
+    except Exception as exc:
+        logger.exception("Audit failed for %s", table.fqname)
+        return (
+            {
+                "table_name": table.fqname,
+                "oracle_exists": "",
+                "postgres_exists": "",
+                "status": "MISMATCH",
+                "error": str(exc),
+            },
+            [],
+            [],
+            [],
+        )
+
+
+def _merge_audit_result(
+    result: tuple[dict, list[dict], list[dict], list[dict]],
+    inventory_rows: list[dict],
+    column_diff_rows: list[dict],
+    type_mismatch_rows: list[dict],
+    dependency_rows: list[dict],
+) -> None:
+    inventory, diffs, mismatches, dependencies = result
+    inventory_rows.append(inventory)
+    column_diff_rows.extend(diffs)
+    type_mismatch_rows.extend(mismatches)
+    dependency_rows.extend(dependencies)
 
 
 def _resolve_tables(config: AppConfig, override: list[str] | None, *, direction: str | None = None) -> list[str]:
@@ -216,6 +298,21 @@ def _resolve_tables(config: AppConfig, override: list[str] | None, *, direction:
     if direction:
         return config.table_names_for_direction(direction)
     return config.table_names()
+
+
+def _discover_postgres_tables(config: AppConfig, logger: logging.Logger) -> list[str]:
+    from oracle_pg_sync.db import postgres
+
+    logger.info("Tidak ada table list. Ambil semua table dari PostgreSQL schema=%s", config.postgres.schema)
+    with postgres.connect(config.postgres, autocommit=True) as pcon:
+        with pcon.cursor() as cur:
+            tables = postgres.list_tables(cur, config.postgres.schema)
+    logger.info("Ditemukan %s table dari PostgreSQL", len(tables))
+    return tables
+
+
+def _sql_suggestions_path(report_dir: Path, override: str | None) -> Path:
+    return Path(override) if override else report_dir / "schema_suggestions.sql"
 
 
 def _resolve_direction(config: AppConfig, override: str | None) -> str:

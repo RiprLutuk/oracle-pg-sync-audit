@@ -54,8 +54,18 @@ python -m oracle_pg_sync audit --config config.yaml --fast-count
 Untuk subset:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --tables ADDRESS HOUSEMASTER --fast-count
+python -m oracle_pg_sync audit --config config.yaml --tables sample_customer sample_order --fast-count
 ```
+
+Jika config tidak berisi table list, audit akan mengambil semua table dari PostgreSQL schema. Untuk production, lebih aman tetap pakai table list eksplisit atau `--tables` agar scope jelas.
+
+SQL suggestion dibuat otomatis di:
+
+```text
+reports/schema_suggestions.sql
+```
+
+File ini hanya bahan review DBA. Pakai `--suggest-drop` hanya kalau kolom ekstra di PostgreSQL memang sudah disetujui untuk dihapus.
 
 Buka:
 
@@ -64,6 +74,7 @@ reports/report.html
 reports/inventory_summary.csv
 reports/column_diff.csv
 reports/type_mismatch.csv
+reports/schema_suggestions.sql
 ```
 
 Stop jika ada:
@@ -83,13 +94,13 @@ python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgre
 Atau table tertentu:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables ADDRESS
+python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer
 ```
 
 Untuk reverse sync PostgreSQL ke Oracle:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables ADDRESS --mode truncate
+python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate
 ```
 
 Pastikan `reports/sync_result.csv` berisi `DRY_RUN`, bukan `FAILED`.
@@ -103,13 +114,13 @@ python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgre
 Untuk satu table:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables ADDRESS --execute
+python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --execute
 ```
 
 Execute reverse sync:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables ADDRESS --mode truncate --execute
+python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate --execute
 ```
 
 Pantau:
@@ -202,7 +213,7 @@ Pakai `--force` hanya jika semua kondisi ini terpenuhi:
 Command:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables ADDRESS --mode swap --execute --force
+python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --mode swap --execute --force
 ```
 
 ## Catatan Reverse Sync PostgreSQL ke Oracle

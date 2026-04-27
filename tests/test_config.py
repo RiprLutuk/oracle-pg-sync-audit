@@ -24,8 +24,8 @@ postgres:
   user: app
   password: REPLACE_ME
 tables:
-  - name: public.ADDRESS
-    mode: swap
+  - name: public.sample_customer
+    mode: truncate
 """,
                 encoding="utf-8",
             )
@@ -34,7 +34,7 @@ tables:
 
         self.assertEqual(config.postgres.schema, "public")
         self.assertTrue(config.sync.dry_run)
-        self.assertEqual(config.table_config("ADDRESS").mode, "swap")
+        self.assertEqual(config.table_config("sample_customer").mode, "truncate")
 
 
 if __name__ == "__main__":

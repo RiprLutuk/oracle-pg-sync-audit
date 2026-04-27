@@ -201,6 +201,14 @@ Field:
 
 - Saran tipe PostgreSQL jika kolom perlu dibuat.
 
+## schema_suggestions.sql
+
+File ini dibuat otomatis dari `column_diff.csv`.
+
+- `missing_in_postgres` menjadi saran `ALTER TABLE ... ADD COLUMN`.
+- `extra_in_postgres` hanya menjadi `ALTER TABLE ... DROP COLUMN` jika audit dijalankan dengan `--suggest-drop`.
+- Review manual tetap wajib sebelum SQL dijalankan di production.
+
 ## type_mismatch.csv
 
 Field:

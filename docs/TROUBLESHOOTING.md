@@ -125,7 +125,7 @@ reports/sync_result.csv
 Jika tetap ingin lanjut:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --tables ADDRESS --mode swap --execute --force
+python -m oracle_pg_sync sync --config config.yaml --tables sample_customer --mode swap --execute --force
 ```
 
 Gunakan `--force` hanya setelah review.
@@ -143,7 +143,7 @@ Penyebab umum:
 Langkah:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --tables ADDRESS --exact-count
+python -m oracle_pg_sync audit --config config.yaml --tables sample_customer --exact-count
 ```
 
 Jika masih mismatch, cek manual:

@@ -50,6 +50,19 @@ def fast_count_rows(cur, schema: str, table: str) -> int | None:
     return int(row[0]) if row and row[0] is not None else None
 
 
+def list_tables(cur, schema: str) -> list[str]:
+    cur.execute(
+        """
+        SELECT tablename
+        FROM pg_tables
+        WHERE schemaname = %s
+        ORDER BY tablename
+        """,
+        (schema,),
+    )
+    return [f"{schema}.{row[0]}" for row in cur.fetchall()]
+
+
 def get_columns(cur, schema: str, table: str) -> list[dict[str, Any]]:
     cur.execute(
         """
