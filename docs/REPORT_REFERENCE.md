@@ -1,54 +1,54 @@
 # Report Reference
 
-Semua output masuk ke folder `reports/` kecuali diubah melalui `reports.output_dir`.
+Semua output eksekusi masuk ke folder `reports/run_<timestamp>_<run_id>/` kecuali `reports.output_dir` diubah. Root `reports/` hanya dipakai untuk checkpoint, lock, log runtime global, dan kumpulan run folder.
 
 ## Daftar File
 
-`inventory_summary.csv`
+`run_<timestamp>_<run_id>/inventory_summary.csv`
 
 - Summary utama per table.
 - Dipakai untuk melihat status final table.
 
-`inventory_summary.xlsx`
+`run_<timestamp>_<run_id>/inventory_summary.xlsx`
 
 - Versi Excel dari inventory summary.
 - Cocok untuk review DBA/non-developer.
 
-`column_diff.csv`
+`run_<timestamp>_<run_id>/column_diff.csv`
 
 - Daftar missing column, extra column, dan ordinal mismatch.
 
-`type_mismatch.csv`
+`run_<timestamp>_<run_id>/type_mismatch.csv`
 
 - Daftar tipe data yang dianggap tidak compatible.
 
-`object_dependency_summary.csv`
+`run_<timestamp>_<run_id>/object_dependency_summary.csv`
 
 - Object terkait table dari Oracle dan PostgreSQL.
 - Berisi view, procedure, function, package, atau dependency lain yang terdeteksi.
 
-`object_inventory.csv`
+`run_<timestamp>_<run_id>/object_inventory.csv`
 
 - Inventory object schema dari `audit-objects`.
 - Berisi view, materialized view, sequence, procedure, function, package, trigger, synonym.
 
-`object_compare.csv`
+`run_<timestamp>_<run_id>/object_compare.csv`
 
 - Hasil compare object schema Oracle vs PostgreSQL dari `audit-objects`.
 - Status: `MATCH`, `MISSING_IN_ORACLE`, atau `MISSING_IN_POSTGRES`.
 - PostgreSQL extension-owned objects di-skip secara default; pakai `--include-extension-objects` jika perlu.
 
-`sync_result.csv`
+`run_<timestamp>_<run_id>/sync_result.csv`
 
 - Hasil command sync.
 - Ada status per table: `DRY_RUN`, `SUCCESS`, `WARNING`, `SKIPPED`, `FAILED`.
 
-`sync.log`
+`run_<timestamp>_<run_id>/logs.txt`
 
 - Log runtime.
 - Dipakai untuk investigasi error.
 
-`validation_checksum.csv`
+`run_<timestamp>_<run_id>/validation_checksum.csv`
 
 - Hasil checksum validation jika fitur checksum aktif.
 - Field penting: `table_name`, `chunk_key`, `source_hash`, `target_hash`, `row_count_source`, `row_count_target`, `status`.
@@ -70,10 +70,10 @@ Semua output masuk ke folder `reports/` kecuali diubah melalui `reports.output_d
 - Dashboard HTML per run.
 - Berisi link lokal ke `report.xlsx` dan `manifest.json`.
 
-`report.html`
+`run_<timestamp>_<run_id>/report.html`
 
 - Dashboard HTML untuk DBA.
-- Menampilkan link ke manifest terbaru jika tersedia.
+- Menampilkan link lokal ke manifest/workbook run tersebut.
 
 ## inventory_summary.csv
 

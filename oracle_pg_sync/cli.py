@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--exact-count", action="store_true", help="Use SELECT COUNT(1)")
     audit.add_argument("--workers", type=int, default=1, help="Parallel audit workers. Default 1 agar ringan")
     audit.add_argument("--suggest-drop", action="store_true", help="Include DROP COLUMN suggestions for PG-only columns")
-    audit.add_argument("--sql-out", help="Path output SQL suggestion. Default: reports/schema_suggestions.sql")
+    audit.add_argument("--sql-out", help="Path output SQL suggestion. Default: current run dir/schema_suggestions.sql")
 
     sync = sub.add_parser("sync", help="Sync data antar Oracle dan PostgreSQL")
     _add_common_args(sync)
@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--force", action="store_true", help="Tetap sync walaupun struktur mismatch")
     _add_production_sync_args(sync)
 
-    report = sub.add_parser("report", help="Generate report.html dari file CSV reports")
+    report = sub.add_parser("report", help="Generate report.html dari CSV latest run")
     _add_common_args(report)
     report.add_argument("--tables", nargs="*", help="Tidak dipakai, disediakan agar konsisten")
 
@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     all_cmd.add_argument("--exact-count", action="store_true", help="Use SELECT COUNT(1)")
     all_cmd.add_argument("--workers", type=int, default=1, help="Parallel audit workers. Default 1 agar ringan")
     all_cmd.add_argument("--suggest-drop", action="store_true", help="Include DROP COLUMN suggestions for PG-only columns")
-    all_cmd.add_argument("--sql-out", help="Path output SQL suggestion. Default: reports/schema_suggestions.sql")
+    all_cmd.add_argument("--sql-out", help="Path output SQL suggestion. Default: current run dir/schema_suggestions.sql")
 
     return parser
 
@@ -223,13 +223,14 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint_path=str(checkpoint_store.path),
         )
         audit_result = run_audit(config, tables, logger, workers=args.workers)
+        run_dir = manifest.run_dir
         write_audit_reports(
-            report_dir,
+            run_dir,
             inventory_rows=audit_result.inventory_rows,
             column_diff_rows=audit_result.column_diff_rows,
             type_mismatch_rows=audit_result.type_mismatch_rows,
             dependency_rows=audit_result.dependency_rows,
-            sql_suggestions_path=_sql_suggestions_path(report_dir, getattr(args, "sql_out", None)),
+            sql_suggestions_path=_sql_suggestions_path(run_dir, getattr(args, "sql_out", None)),
             suggest_drop=args.suggest_drop,
         )
         _write_audit_run_reports(
@@ -244,15 +245,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         manifest_path = manifest.finish(
             result_rows=audit_result.inventory_rows,
-            report_files=[
-                str(report_dir / "inventory_summary.csv"),
-                str(report_dir / "column_diff.csv"),
-                str(report_dir / "type_mismatch.csv"),
-                str(report_dir / "report.html"),
-                str(manifest.run_dir / "report.xlsx"),
-                str(manifest.run_dir / "report.html"),
-                str(manifest.run_dir / "logs.txt"),
-            ],
+            report_files=_run_report_files(
+                run_dir,
+                "inventory_summary.csv",
+                "inventory_summary.xlsx",
+                "column_diff.csv",
+                "type_mismatch.csv",
+                "object_dependency_summary.csv",
+                "schema_suggestions.sql",
+                "report.xlsx",
+                "report.html",
+                "logs.txt",
+            ),
         )
         logger.info("Manifest dibuat: %s", manifest_path)
         logger.info("Audit selesai. Report ada di %s", report_dir)
@@ -275,7 +279,9 @@ def main(argv: list[str] | None = None) -> int:
             tables_requested=tables,
             checkpoint_path=str(checkpoint_store.path),
         )
-        dependency_pre_rows = _write_dependency_report(config, tables, logger, report_dir, phase="pre")
+        run_dir = manifest.run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
+        dependency_pre_rows = _write_dependency_report(config, tables, logger, run_dir, phase="pre")
         results = _sync_runner(config, logger, direction).sync_tables(
             tables,
             mode_override=args.mode,
@@ -288,21 +294,21 @@ def main(argv: list[str] | None = None) -> int:
             full_refresh=args.full_refresh,
         )
         rows = [result.as_row() for result in results]
-        write_csv(report_dir / "sync_result.csv", rows)
-        write_rows_xlsx(report_dir / "sync_result.xlsx", rows, sheet_name="sync_result")
+        write_csv(run_dir / "sync_result.csv", rows)
+        write_rows_xlsx(run_dir / "sync_result.xlsx", rows, sheet_name="sync_result")
         checksum_rows = _checksum_rows_from_results(results, rows)
         if checksum_rows:
-            write_csv(report_dir / "validation_checksum.csv", checksum_rows)
-            write_rows_xlsx(report_dir / "validation_checksum.xlsx", checksum_rows, sheet_name="checksum")
+            write_csv(run_dir / "validation_checksum.csv", checksum_rows)
+            write_rows_xlsx(run_dir / "validation_checksum.xlsx", checksum_rows, sheet_name="checksum")
         maintenance_rows = _run_dependency_maintenance(
             config,
             tables,
             logger,
-            report_dir,
+            run_dir,
             dependency_pre_rows,
             execute=args.execute,
         )
-        dependency_post_rows = _write_dependency_report(config, tables, logger, report_dir, phase="post")
+        dependency_post_rows = _write_dependency_report(config, tables, logger, run_dir, phase="post")
         _write_run_reports(
             manifest,
             report_dir=report_dir,
@@ -320,16 +326,19 @@ def main(argv: list[str] | None = None) -> int:
             result_rows=rows,
             checksum_rows=checksum_rows,
             lob_rows=rows,
-            report_files=[
-                str(report_dir / "sync_result.csv"),
-                str(report_dir / "sync_result.xlsx"),
-                str(report_dir / "dependency_pre.csv"),
-                str(report_dir / "dependency_post.csv"),
-                str(report_dir / "dependency_maintenance.csv"),
-                str(manifest.run_dir / "report.xlsx"),
-                str(manifest.run_dir / "report.html"),
-                str(manifest.run_dir / "logs.txt"),
-            ],
+            report_files=_run_report_files(
+                run_dir,
+                "sync_result.csv",
+                "sync_result.xlsx",
+                "validation_checksum.csv",
+                "validation_checksum.xlsx",
+                "dependency_pre.csv",
+                "dependency_post.csv",
+                "dependency_maintenance.csv",
+                "report.xlsx",
+                "report.html",
+                "logs.txt",
+            ),
         )
         logger.info("Manifest dibuat: %s", manifest_path)
         logger.info("Sync selesai. SUCCESS=%s FAILED=%s SKIPPED=%s DRY_RUN=%s",
@@ -339,14 +348,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "report":
         from oracle_pg_sync.reports.writer_html import write_html_report
 
-        inventory_rows = _read_csv(report_dir / "inventory_summary.csv")
-        column_diff_rows = _read_csv(report_dir / "column_diff.csv")
-        sync_rows = _read_csv(report_dir / "sync_result.csv")
-        checksum_rows = _read_csv(report_dir / "validation_checksum.csv")
-        dependency_rows = _read_csv(report_dir / "dependency_pre.csv") + _read_csv(report_dir / "dependency_post.csv")
-        maintenance_rows = _read_csv(report_dir / "dependency_maintenance.csv")
+        source_dir = _latest_run_dir(report_dir) or report_dir
+        inventory_rows = _read_csv(source_dir / "inventory_summary.csv")
+        column_diff_rows = _read_csv(source_dir / "column_diff.csv")
+        sync_rows = _read_csv(source_dir / "sync_result.csv")
+        checksum_rows = _read_csv(source_dir / "validation_checksum.csv")
+        dependency_rows = _read_csv(source_dir / "dependency_pre.csv") + _read_csv(source_dir / "dependency_post.csv")
+        maintenance_rows = _read_csv(source_dir / "dependency_maintenance.csv")
         write_html_report(
-            report_dir / "report.html",
+            source_dir / "report.html",
             inventory_rows=inventory_rows,
             column_diff_rows=column_diff_rows,
             sync_rows=sync_rows,
@@ -354,20 +364,40 @@ def main(argv: list[str] | None = None) -> int:
             dependency_rows=dependency_rows,
             maintenance_rows=maintenance_rows,
         )
-        logger.info("HTML report dibuat: %s", report_dir / "report.html")
+        logger.info("HTML report dibuat: %s", source_dir / "report.html")
         return 0
 
     if args.command == "audit-objects":
         from oracle_pg_sync.reports.writer_csv import write_csv
 
+        run_id = new_run_id()
+        manifest = RunManifest(
+            report_dir=report_dir,
+            run_id=run_id,
+            command="audit-objects",
+            config_file=args.config,
+            config=config,
+            direction=None,
+            dry_run=True,
+            tables_requested=[],
+            checkpoint_path=str(checkpoint_store.path),
+        )
+        run_dir = manifest.run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
         result = run_object_audit(
             config,
             logger,
             object_types=getattr(args, "types", None),
             include_extension_objects=args.include_extension_objects,
         )
-        write_csv(report_dir / "object_inventory.csv", result.inventory_rows)
-        write_csv(report_dir / "object_compare.csv", result.compare_rows)
+        write_csv(run_dir / "object_inventory.csv", result.inventory_rows)
+        write_csv(run_dir / "object_compare.csv", result.compare_rows)
+        _copy_log_to_run_dir(report_dir, run_dir)
+        manifest_path = manifest.finish(
+            result_rows=result.compare_rows,
+            report_files=_run_report_files(run_dir, "object_inventory.csv", "object_compare.csv", "logs.txt"),
+        )
+        logger.info("Manifest dibuat: %s", manifest_path)
         logger.info(
             "Object audit selesai. MATCH=%s MISSING_IN_ORACLE=%s MISSING_IN_POSTGRES=%s",
             _count(result.compare_rows, "MATCH"),
@@ -379,9 +409,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "dependencies":
         from oracle_pg_sync.reports.writer_csv import write_csv
 
+        run_id = new_run_id()
+        manifest = RunManifest(
+            report_dir=report_dir,
+            run_id=run_id,
+            command="dependencies",
+            config_file=args.config,
+            config=config,
+            direction=None,
+            dry_run=True,
+            tables_requested=tables,
+            checkpoint_path=str(checkpoint_store.path),
+        )
+        run_dir = manifest.run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
         rows = run_table_dependency_audit(config, tables, logger)
-        out_path = Path(args.out) if args.out else report_dir / "table_object_dependencies.csv"
+        out_path = Path(args.out) if args.out else run_dir / "table_object_dependencies.csv"
         write_csv(out_path, rows)
+        _copy_log_to_run_dir(report_dir, run_dir)
+        manifest_path = manifest.finish(
+            result_rows=rows,
+            report_files=[str(out_path), *_run_report_files(run_dir, "logs.txt")],
+        )
+        logger.info("Manifest dibuat: %s", manifest_path)
         logger.info("Dependency audit selesai. ROWS=%s OUT=%s", len(rows), out_path)
         return 0
 
@@ -403,9 +453,14 @@ def main(argv: list[str] | None = None) -> int:
             tables_requested=tables,
             checkpoint_path=str(checkpoint_store.path),
         )
+        run_dir = manifest.run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Step 1/3 audit awal")
-        run_audit(config, tables, logger, workers=args.workers)
-        dependency_pre_rows = _write_dependency_report(config, tables, logger, report_dir, phase="pre")
+        pre_audit_result = run_audit(config, tables, logger, workers=args.workers)
+        write_csv(run_dir / "pre_inventory_summary.csv", pre_audit_result.inventory_rows)
+        write_csv(run_dir / "pre_column_diff.csv", pre_audit_result.column_diff_rows)
+        write_csv(run_dir / "pre_type_mismatch.csv", pre_audit_result.type_mismatch_rows)
+        dependency_pre_rows = _write_dependency_report(config, tables, logger, run_dir, phase="pre")
         logger.info("Step 2/3 sync direction=%s", direction)
         sync_results = _sync_runner(config, logger, direction).sync_tables(
             tables,
@@ -419,27 +474,42 @@ def main(argv: list[str] | None = None) -> int:
             full_refresh=args.full_refresh,
         )
         sync_rows = [result.as_row() for result in sync_results]
-        write_csv(report_dir / "sync_result.csv", sync_rows)
-        write_rows_xlsx(report_dir / "sync_result.xlsx", sync_rows, sheet_name="sync_result")
+        write_csv(run_dir / "sync_result.csv", sync_rows)
+        write_rows_xlsx(run_dir / "sync_result.xlsx", sync_rows, sheet_name="sync_result")
         checksum_rows = _checksum_rows_from_results(sync_results, sync_rows)
         if checksum_rows:
-            write_csv(report_dir / "validation_checksum.csv", checksum_rows)
-            write_rows_xlsx(report_dir / "validation_checksum.xlsx", checksum_rows, sheet_name="checksum")
+            write_csv(run_dir / "validation_checksum.csv", checksum_rows)
+            write_rows_xlsx(run_dir / "validation_checksum.xlsx", checksum_rows, sheet_name="checksum")
         maintenance_rows = _run_dependency_maintenance(
             config,
             tables,
             logger,
-            report_dir,
+            run_dir,
             dependency_pre_rows,
             execute=args.execute,
         )
-        dependency_post_rows = _write_dependency_report(config, tables, logger, report_dir, phase="post")
+        dependency_post_rows = _write_dependency_report(config, tables, logger, run_dir, phase="post")
+        logger.info("Step 3/3 audit ulang dan report")
+        audit_result = run_audit(config, tables, logger, workers=args.workers)
+        write_audit_reports(
+            run_dir,
+            inventory_rows=audit_result.inventory_rows,
+            column_diff_rows=audit_result.column_diff_rows,
+            type_mismatch_rows=audit_result.type_mismatch_rows,
+            dependency_rows=audit_result.dependency_rows,
+            sql_suggestions_path=_sql_suggestions_path(run_dir, getattr(args, "sql_out", None)),
+            suggest_drop=args.suggest_drop,
+            sync_rows=sync_rows,
+        )
         _write_run_reports(
             manifest,
             report_dir=report_dir,
+            inventory_rows=audit_result.inventory_rows,
+            column_diff_rows=audit_result.column_diff_rows,
+            type_mismatch_rows=audit_result.type_mismatch_rows,
             sync_rows=sync_rows,
             checksum_rows=checksum_rows,
-            dependency_rows=dependency_pre_rows + dependency_post_rows,
+            dependency_rows=dependency_pre_rows + dependency_post_rows + audit_result.dependency_rows,
             maintenance_rows=maintenance_rows,
             watermark_rows=checkpoint_store.list_watermarks(),
             checkpoint_rows=checkpoint_store.list_chunks(run_id),
@@ -447,35 +517,32 @@ def main(argv: list[str] | None = None) -> int:
             write_central_report_xlsx=write_central_report_xlsx,
             write_html_report=write_html_report,
         )
-        logger.info("Step 3/3 audit ulang dan report")
-        audit_result = run_audit(config, tables, logger, workers=args.workers)
-        write_audit_reports(
-            report_dir,
-            inventory_rows=audit_result.inventory_rows,
-            column_diff_rows=audit_result.column_diff_rows,
-            type_mismatch_rows=audit_result.type_mismatch_rows,
-            dependency_rows=audit_result.dependency_rows,
-            sql_suggestions_path=_sql_suggestions_path(report_dir, getattr(args, "sql_out", None)),
-            suggest_drop=args.suggest_drop,
-            sync_rows=sync_rows,
-        )
-        if (report_dir / "report.html").exists():
-            shutil.copyfile(report_dir / "report.html", manifest.run_dir / "report.html")
         manifest_path = manifest.finish(
             result_rows=sync_rows,
             checksum_rows=checksum_rows,
             lob_rows=sync_rows,
-            report_files=[
-                str(report_dir / "sync_result.csv"),
-                str(report_dir / "inventory_summary.csv"),
-                str(report_dir / "dependency_pre.csv"),
-                str(report_dir / "dependency_post.csv"),
-                str(report_dir / "dependency_maintenance.csv"),
-                str(report_dir / "report.html"),
-                str(manifest.run_dir / "report.xlsx"),
-                str(manifest.run_dir / "report.html"),
-                str(manifest.run_dir / "logs.txt"),
-            ],
+            report_files=_run_report_files(
+                run_dir,
+                "pre_inventory_summary.csv",
+                "pre_column_diff.csv",
+                "pre_type_mismatch.csv",
+                "sync_result.csv",
+                "sync_result.xlsx",
+                "validation_checksum.csv",
+                "validation_checksum.xlsx",
+                "inventory_summary.csv",
+                "inventory_summary.xlsx",
+                "column_diff.csv",
+                "type_mismatch.csv",
+                "object_dependency_summary.csv",
+                "dependency_pre.csv",
+                "dependency_post.csv",
+                "dependency_maintenance.csv",
+                "schema_suggestions.sql",
+                "report.xlsx",
+                "report.html",
+                "logs.txt",
+            ),
         )
         logger.info("Manifest dibuat: %s", manifest_path)
         return 1 if any(row["status"] == "FAILED" for row in sync_rows) else 0
@@ -810,6 +877,11 @@ def _read_csv(path: Path) -> list[dict]:
         return list(csv.DictReader(handle))
 
 
+def _latest_run_dir(report_dir: Path) -> Path | None:
+    manifests = sorted(report_dir.glob("run_*/manifest.json"), reverse=True)
+    return manifests[0].parent if manifests else None
+
+
 def _print_rows(rows: list[dict]) -> None:
     if not rows:
         print("No rows.")
@@ -939,6 +1011,9 @@ def _write_run_reports(
     manifest: RunManifest,
     *,
     report_dir: Path,
+    inventory_rows: list[dict] | None = None,
+    column_diff_rows: list[dict] | None = None,
+    type_mismatch_rows: list[dict] | None = None,
     sync_rows: list[dict],
     checksum_rows: list[dict],
     dependency_rows: list[dict] | None = None,
@@ -953,6 +1028,9 @@ def _write_run_reports(
     run_dir.mkdir(parents=True, exist_ok=True)
     write_central_report_xlsx(
         run_dir / "report.xlsx",
+        inventory_rows=inventory_rows or [],
+        column_diff_rows=column_diff_rows or [],
+        type_mismatch_rows=type_mismatch_rows or [],
         sync_rows=sync_rows,
         checksum_rows=checksum_rows,
         dependency_rows=dependency_rows or [],
@@ -963,18 +1041,14 @@ def _write_run_reports(
     )
     write_html_report(
         run_dir / "report.html",
-        inventory_rows=[],
-        column_diff_rows=[],
+        inventory_rows=inventory_rows or [],
+        column_diff_rows=column_diff_rows or [],
         sync_rows=sync_rows,
         checksum_rows=checksum_rows,
         dependency_rows=dependency_rows or [],
         maintenance_rows=maintenance_rows or [],
     )
-    log_path = report_dir / "sync.log"
-    if log_path.exists():
-        shutil.copyfile(log_path, run_dir / "logs.txt")
-    else:
-        (run_dir / "logs.txt").write_text("", encoding="utf-8")
+    _copy_log_to_run_dir(report_dir, run_dir)
 
 
 def _write_audit_run_reports(
@@ -988,6 +1062,8 @@ def _write_audit_run_reports(
     config: AppConfig,
     write_central_report_xlsx,
 ) -> None:
+    from oracle_pg_sync.reports.writer_html import write_html_report
+
     run_dir = manifest.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
     write_central_report_xlsx(
@@ -1000,16 +1076,28 @@ def _write_audit_run_reports(
         dependency_rows=dependency_rows or [],
         config_sanitized=sanitize(config),
     )
-    html_path = report_dir / "report.html"
-    if html_path.exists():
-        shutil.copyfile(html_path, run_dir / "report.html")
-    else:
-        (run_dir / "report.html").write_text("", encoding="utf-8")
+    write_html_report(
+        run_dir / "report.html",
+        inventory_rows=inventory_rows or [],
+        column_diff_rows=column_diff_rows or [],
+        sync_rows=[],
+        checksum_rows=[],
+        dependency_rows=dependency_rows or [],
+        maintenance_rows=[],
+    )
+    _copy_log_to_run_dir(report_dir, run_dir)
+
+
+def _copy_log_to_run_dir(report_dir: Path, run_dir: Path) -> None:
     log_path = report_dir / "sync.log"
     if log_path.exists():
         shutil.copyfile(log_path, run_dir / "logs.txt")
     else:
         (run_dir / "logs.txt").write_text("", encoding="utf-8")
+
+
+def _run_report_files(run_dir: Path, *names: str) -> list[str]:
+    return [str(run_dir / name) for name in names if (run_dir / name).exists()]
 
 
 if __name__ == "__main__":

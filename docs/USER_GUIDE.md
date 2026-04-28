@@ -164,7 +164,7 @@ python -m oracle_pg_sync audit --config config.yaml --exact-count
 Untuk membuat SQL suggestion seperti script `verify_oracle_pg.py` lama:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --sql-out reports/schema_suggestions.sql
+python -m oracle_pg_sync audit --config config.yaml
 python -m oracle_pg_sync audit --config config.yaml --suggest-drop
 ```
 
@@ -187,11 +187,11 @@ python -m oracle_pg_sync audit-objects --config config.yaml --include-extension-
 File utama:
 
 ```text
-reports/inventory_summary.csv
-reports/report.html
-reports/column_diff.csv
-reports/type_mismatch.csv
-reports/schema_suggestions.sql
+reports/run_<timestamp>_<run_id>/inventory_summary.csv
+reports/run_<timestamp>_<run_id>/report.html
+reports/run_<timestamp>_<run_id>/column_diff.csv
+reports/run_<timestamp>_<run_id>/type_mismatch.csv
+reports/run_<timestamp>_<run_id>/schema_suggestions.sql
 ```
 
 Interpretasi cepat:
@@ -241,8 +241,8 @@ ops sync --config config.yaml --direction postgres-to-oracle --tables public.add
 Lihat hasilnya di:
 
 ```text
-reports/sync_result.csv
-reports/sync.log
+reports/run_<timestamp>_<run_id>/sync_result.csv
+reports/run_<timestamp>_<run_id>/logs.txt
 ```
 
 Status `DRY_RUN` berarti tool hanya melakukan precheck dan memberi tahu apa yang akan dilakukan.

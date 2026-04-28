@@ -69,7 +69,7 @@ Jika config tidak berisi table list, audit akan mengambil semua table dari Postg
 SQL suggestion dibuat otomatis di:
 
 ```text
-reports/schema_suggestions.sql
+reports/run_<timestamp>_<run_id>/schema_suggestions.sql
 ```
 
 File ini hanya bahan review DBA. Pakai `--suggest-drop` hanya kalau kolom ekstra di PostgreSQL memang sudah disetujui untuk dihapus.
@@ -77,11 +77,11 @@ File ini hanya bahan review DBA. Pakai `--suggest-drop` hanya kalau kolom ekstra
 Buka:
 
 ```text
-reports/report.html
-reports/inventory_summary.csv
-reports/column_diff.csv
-reports/type_mismatch.csv
-reports/schema_suggestions.sql
+reports/run_<timestamp>_<run_id>/report.html
+reports/run_<timestamp>_<run_id>/inventory_summary.csv
+reports/run_<timestamp>_<run_id>/column_diff.csv
+reports/run_<timestamp>_<run_id>/type_mismatch.csv
+reports/run_<timestamp>_<run_id>/schema_suggestions.sql
 ```
 
 Stop jika ada:
@@ -117,7 +117,7 @@ Untuk reverse sync PostgreSQL ke Oracle:
 python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate
 ```
 
-Pastikan `reports/sync_result.csv` berisi `DRY_RUN`, bukan `FAILED`.
+Pastikan `reports/run_<timestamp>_<run_id>/sync_result.csv` berisi `DRY_RUN`, bukan `FAILED`.
 
 Untuk incremental dry-run:
 

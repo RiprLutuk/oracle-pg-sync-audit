@@ -9,8 +9,11 @@ from oracle_pg_sync.cli import (
     _apply_profile,
     _apply_runtime_table_overrides,
     _apply_where_override,
+    _latest_run_dir,
     _resolve_tables,
+    _run_report_files,
     build_parser,
+    main as cli_main,
 )
 from oracle_pg_sync.config import AppConfig, OracleConfig, PostgresConfig, TableConfig
 from oracle_pg_sync.ops import _expand_bare_lob_flag, main as ops_main
@@ -229,6 +232,55 @@ reports:
 
             with redirect_stdout(StringIO()):
                 self.assertEqual(ops_main(["report", "latest", "--config", str(config_path)]), 0)
+
+    def test_latest_run_dir_and_report_files_are_run_scoped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report_dir = Path(tmp) / "reports"
+            old_run = report_dir / "run_20260101_010101_old"
+            new_run = report_dir / "run_20260102_010101_new"
+            old_run.mkdir(parents=True)
+            new_run.mkdir(parents=True)
+            (old_run / "manifest.json").write_text("{}", encoding="utf-8")
+            (new_run / "manifest.json").write_text("{}", encoding="utf-8")
+            (new_run / "report.html").write_text("", encoding="utf-8")
+            (new_run / "report.xlsx").write_text("", encoding="utf-8")
+
+            latest = _latest_run_dir(report_dir)
+            files = _run_report_files(new_run, "report.html", "report.xlsx", "missing.csv")
+
+        self.assertEqual(latest, new_run)
+        self.assertEqual(files, [str(new_run / "report.html"), str(new_run / "report.xlsx")])
+
+    def test_report_command_regenerates_latest_run_html(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report_dir = Path(tmp) / "reports"
+            run_dir = report_dir / "run_20260102_010101_new"
+            run_dir.mkdir(parents=True)
+            (run_dir / "manifest.json").write_text("{}", encoding="utf-8")
+            (run_dir / "report.xlsx").write_text("", encoding="utf-8")
+            (run_dir / "inventory_summary.csv").write_text(
+                "table_name,oracle_row_count,postgres_row_count,row_count_match,status\npublic.sample,1,1,true,MATCH\n",
+                encoding="utf-8",
+            )
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text(
+                f"""
+oracle:
+  schema: APP
+postgres:
+  schema: public
+reports:
+  output_dir: {report_dir}
+""",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(cli_main(["report", "--config", str(config_path)]), 0)
+            html = (run_dir / "report.html").read_text(encoding="utf-8")
+
+        self.assertIn("public.sample", html)
+        self.assertIn('href="manifest.json"', html)
+        self.assertIn('href="report.xlsx"', html)
 
 
 if __name__ == "__main__":

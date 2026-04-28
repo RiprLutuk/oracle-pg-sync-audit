@@ -116,10 +116,10 @@ Jika status `SKIPPED`, biasanya karena mismatch fatal:
 Cek:
 
 ```text
-reports/inventory_summary.csv
-reports/column_diff.csv
-reports/type_mismatch.csv
-reports/sync_result.csv
+reports/run_<timestamp>_<run_id>/inventory_summary.csv
+reports/run_<timestamp>_<run_id>/column_diff.csv
+reports/run_<timestamp>_<run_id>/type_mismatch.csv
+reports/run_<timestamp>_<run_id>/sync_result.csv
 ```
 
 Jika tetap ingin lanjut:
