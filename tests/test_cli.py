@@ -62,6 +62,12 @@ tables:
         self.assertEqual(args.types, ["view", "sequence"])
         self.assertTrue(args.include_extension_objects)
 
+    def test_dependencies_command_accepts_manual_tables(self):
+        args = build_parser().parse_args(["dependencies", "--tables", "ADDRESS", "HOUSEMASTER"])
+
+        self.assertEqual(args.command, "dependencies")
+        self.assertEqual(args.tables, ["ADDRESS", "HOUSEMASTER"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -67,6 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include PostgreSQL extension-owned objects such as pg_trgm or pg_stat_statements",
     )
 
+    dependencies = sub.add_parser("dependencies", help="List view/SP/function/trigger/sequence dependencies per table")
+    _add_common_args(dependencies)
+    dependencies.add_argument("--tables", nargs="*", help="Override table list")
+    dependencies.add_argument("--tables-file", help="Read table list from YAML/JSON file")
+    dependencies.add_argument("--limit", type=int, help="Limit table count after table selection")
+    dependencies.add_argument(
+        "--out",
+        help="Path output CSV. Default: reports/table_object_dependencies.csv",
+    )
+
     all_cmd = sub.add_parser("all", help="Audit, sync, audit ulang, lalu report")
     _add_common_args(all_cmd)
     all_cmd.add_argument("--tables", nargs="*", help="Override table list")
@@ -97,7 +107,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
-    if args.command in {"audit", "sync", "all", "audit-objects"}:
+    if args.command in {"audit", "sync", "all", "audit-objects", "dependencies"}:
         _ensure_oracle_client_library_path(config, argv)
     report_dir = Path(config.reports.output_dir)
     logger = setup_logging(report_dir, logging.DEBUG if args.verbose else logging.INFO)
@@ -121,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     elif not tables and args.command == "audit":
         tables = _discover_postgres_tables(config, logger)
 
-    if not tables and args.command != "report":
+    if not tables and args.command not in {"report", "audit-objects"}:
         raise SystemExit("Tidak ada table target. Isi config.tables atau pakai --tables.")
 
     if args.command == "audit":
@@ -187,6 +197,15 @@ def main(argv: list[str] | None = None) -> int:
             _count(result.compare_rows, "MISSING_IN_ORACLE"),
             _count(result.compare_rows, "MISSING_IN_POSTGRES"),
         )
+        return 0
+
+    if args.command == "dependencies":
+        from oracle_pg_sync.reports.writer_csv import write_csv
+
+        rows = run_table_dependency_audit(config, tables, logger)
+        out_path = Path(args.out) if args.out else report_dir / "table_object_dependencies.csv"
+        write_csv(out_path, rows)
+        logger.info("Dependency audit selesai. ROWS=%s OUT=%s", len(rows), out_path)
         return 0
 
     if args.command == "all":
@@ -298,6 +317,20 @@ def run_object_audit(
     inventory_rows = oracle_rows + postgres_rows
     compare_rows = compare_object_inventory(oracle_rows, postgres_rows)
     return ObjectAuditResult(inventory_rows, compare_rows)
+
+
+def run_table_dependency_audit(config: AppConfig, tables: list[str], logger: logging.Logger) -> list[dict]:
+    from oracle_pg_sync.db import oracle, postgres
+
+    rows: list[dict] = []
+    with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+        with ocon.cursor() as ocur, pcon.cursor() as pcur:
+            for table_name in tables:
+                table = split_schema_table(table_name, config.postgres.schema)
+                logger.info("Dependency audit %s", table.fqname)
+                rows.extend(oracle.table_object_dependency_rows(ocur, config.oracle.schema, table.table))
+                rows.extend(postgres.table_object_dependency_rows(pcur, table.schema, table.table))
+    return rows
 
 
 def _audit_table_with_new_connections(

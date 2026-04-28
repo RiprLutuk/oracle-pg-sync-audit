@@ -198,19 +198,228 @@ def dependency_rows(cur, schema: str, table: str) -> list[dict[str, Any]]:
         """,
         (schema, table),
     )
+    relkind_map = {"v": "VIEW", "m": "MATERIALIZED VIEW", "r": "TABLE", "p": "PARTITIONED TABLE"}
     return [
         {
             "source_db": "postgres",
             "table_name": f"{schema}.{table}",
             "object_schema": row[0],
             "object_name": row[1],
-            "object_type": row[2],
+            "object_type": relkind_map.get(row[2], row[2]),
             "referenced_schema": row[3],
             "referenced_name": row[4],
-            "referenced_type": row[5],
+            "referenced_type": relkind_map.get(row[5], row[5]),
         }
         for row in cur.fetchall()
     ]
+
+
+def table_object_dependency_rows(cur, schema: str, table: str) -> list[dict[str, Any]]:
+    rows = [
+        {
+            **row,
+            "dependency_kind": "rewrite_dependency",
+            "details": "",
+        }
+        for row in dependency_rows(cur, schema, table)
+    ]
+    rows.extend(_index_rows(cur, schema, table))
+    rows.extend(_function_dependency_rows(cur, schema, table))
+    rows.extend(_trigger_rows(cur, schema, table))
+    rows.extend(_sequence_rows(cur, schema, table))
+    return _dedupe_dependency_rows(rows)
+
+
+def _index_rows(cur, schema: str, table: str) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT indexname, indexdef
+        FROM pg_indexes
+        WHERE schemaname = %s AND tablename = %s
+        ORDER BY indexname
+        """,
+        (schema, table),
+    )
+    return [
+        {
+            "source_db": "postgres",
+            "table_name": f"{schema}.{table}",
+            "object_schema": schema,
+            "object_name": row[0],
+            "object_type": "INDEX",
+            "dependency_kind": "table_index",
+            "referenced_schema": schema,
+            "referenced_name": table,
+            "referenced_type": "TABLE",
+            "details": row[1],
+        }
+        for row in cur.fetchall()
+    ]
+
+
+def _function_dependency_rows(cur, schema: str, table: str) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT pn.nspname, p.proname, p.prokind::text
+        FROM pg_depend d
+        JOIN pg_proc p ON p.oid = d.objid
+        JOIN pg_namespace pn ON pn.oid = p.pronamespace
+        WHERE d.refobjid = (
+            SELECT c.oid
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s AND c.relname = %s
+        )
+        ORDER BY pn.nspname, p.proname
+        """,
+        (schema, table),
+    )
+    kind_map = {"f": "FUNCTION", "p": "PROCEDURE", "a": "AGGREGATE", "w": "WINDOW"}
+    return [
+        {
+            "source_db": "postgres",
+            "table_name": f"{schema}.{table}",
+            "object_schema": row[0],
+            "object_name": row[1],
+            "object_type": kind_map.get(row[2], "FUNCTION"),
+            "dependency_kind": "function_dependency",
+            "referenced_schema": schema,
+            "referenced_name": table,
+            "referenced_type": "TABLE",
+            "details": f"prokind={row[2]}",
+        }
+        for row in cur.fetchall()
+    ]
+
+
+def _trigger_rows(cur, schema: str, table: str) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT tg.tgname, p.proname, pn.nspname
+        FROM pg_trigger tg
+        LEFT JOIN pg_proc p ON p.oid = tg.tgfoid
+        LEFT JOIN pg_namespace pn ON pn.oid = p.pronamespace
+        JOIN pg_class c ON c.oid = tg.tgrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = %s AND c.relname = %s AND NOT tg.tgisinternal
+        ORDER BY tg.tgname
+        """,
+        (schema, table),
+    )
+    return [
+        {
+            "source_db": "postgres",
+            "table_name": f"{schema}.{table}",
+            "object_schema": schema,
+            "object_name": row[0],
+            "object_type": "TRIGGER",
+            "dependency_kind": "table_trigger",
+            "referenced_schema": schema,
+            "referenced_name": table,
+            "referenced_type": "TABLE",
+            "details": f"function={row[2]}.{row[1]}" if row[1] else "",
+        }
+        for row in cur.fetchall()
+    ]
+
+
+def _sequence_rows(cur, schema: str, table: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    rows.extend(_sequence_serial_rows(cur, schema, table))
+    rows.extend(_sequence_name_match_rows(cur, schema, table))
+    return rows
+
+
+def _sequence_serial_rows(cur, schema: str, table: str) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT a.attname, pg_get_serial_sequence(format('%%I.%%I', n.nspname, c.relname), a.attname)
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_attribute a ON a.attrelid = c.oid
+        WHERE n.nspname = %s
+          AND c.relname = %s
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+        ORDER BY a.attnum
+        """,
+        (schema, table),
+    )
+    rows: list[dict[str, Any]] = []
+    for column_name, sequence_fqname in cur.fetchall():
+        if not sequence_fqname:
+            continue
+        seq_schema, seq_name = _split_pg_fqname(str(sequence_fqname), default_schema=schema)
+        rows.append(
+            {
+                "source_db": "postgres",
+                "table_name": f"{schema}.{table}",
+                "object_schema": seq_schema,
+                "object_name": seq_name,
+                "object_type": "SEQUENCE",
+                "dependency_kind": "serial_or_identity",
+                "referenced_schema": schema,
+                "referenced_name": table,
+                "referenced_type": "TABLE",
+                "details": f"column={column_name}",
+            }
+        )
+    return rows
+
+
+def _sequence_name_match_rows(cur, schema: str, table: str) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT schemaname, sequencename
+        FROM pg_sequences
+        WHERE schemaname = %s
+          AND sequencename ILIKE '%%' || %s || '%%'
+        ORDER BY schemaname, sequencename
+        """,
+        (schema, table),
+    )
+    return [
+        {
+            "source_db": "postgres",
+            "table_name": f"{schema}.{table}",
+            "object_schema": row[0],
+            "object_name": row[1],
+            "object_type": "SEQUENCE",
+            "dependency_kind": "name_match",
+            "referenced_schema": schema,
+            "referenced_name": table,
+            "referenced_type": "TABLE",
+            "details": "sequence name contains table name",
+        }
+        for row in cur.fetchall()
+    ]
+
+
+def _split_pg_fqname(value: str, *, default_schema: str) -> tuple[str, str]:
+    cleaned = value.replace('"', "")
+    if "." not in cleaned:
+        return default_schema, cleaned
+    schema, name = cleaned.rsplit(".", 1)
+    return schema, name
+
+
+def _dedupe_dependency_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str, str, str, str]] = set()
+    unique: list[dict[str, Any]] = []
+    for row in rows:
+        key = (
+            str(row.get("source_db", "")).lower(),
+            str(row.get("table_name", "")).lower(),
+            str(row.get("object_schema", "")).lower(),
+            str(row.get("object_name", "")).lower(),
+            str(row.get("object_type", "")).lower(),
+            str(row.get("dependency_kind", "")).lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique
 
 
 def schema_object_rows(
