@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 pytest_import_error = None
@@ -51,6 +52,33 @@ class WriterExcelTest(unittest.TestCase):
         )
         self.assertEqual(workbook["00_Dashboard"].freeze_panes, "A2")
         self.assertIsNotNone(workbook["04_Checksum_Result"].auto_filter.ref)
+
+    def test_long_cell_values_are_truncated_before_openpyxl_warning(self):
+        from oracle_pg_sync.reports.writer_excel import EXCEL_CELL_MAX_CHARS, write_central_report_xlsx
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.xlsx"
+
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                write_central_report_xlsx(
+                    path,
+                    sync_rows=[
+                        {
+                            "table_name": "public.sample",
+                            "status": "FAILED",
+                            "message": "x" * 95056,
+                        }
+                    ],
+                )
+
+            workbook = load_workbook(path)
+
+        messages = [str(item.message) for item in caught]
+        self.assertFalse(any("Cell contents too long" in message for message in messages))
+        value = workbook["02_Table_Sync_Status"]["C2"].value
+        self.assertLessEqual(len(value), EXCEL_CELL_MAX_CHARS)
+        self.assertIn("truncated", value)
 
 
 if __name__ == "__main__":

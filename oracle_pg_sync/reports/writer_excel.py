@@ -6,15 +6,18 @@ from typing import Any
 import pandas as pd
 from openpyxl.styles import PatternFill
 
+EXCEL_CELL_MAX_CHARS = 32767
+EXCEL_SAFE_CELL_CHARS = 32000
+
 
 def write_inventory_xlsx(path: Path, inventory_rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(inventory_rows).to_excel(path, index=False, sheet_name="inventory")
+    _dataframe(inventory_rows).to_excel(path, index=False, sheet_name="inventory")
 
 
 def write_rows_xlsx(path: Path, rows: list[dict], *, sheet_name: str = "rows") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_excel(path, index=False, sheet_name=sheet_name[:31])
+    _dataframe(rows).to_excel(path, index=False, sheet_name=sheet_name[:31])
 
 
 def write_central_report_xlsx(
@@ -66,7 +69,7 @@ def write_central_report_xlsx(
     }
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         for name, rows in sheets.items():
-            pd.DataFrame(rows).to_excel(writer, index=False, sheet_name=name[:31])
+            _dataframe(rows).to_excel(writer, index=False, sheet_name=name[:31])
         workbook = writer.book
         for worksheet in workbook.worksheets:
             _format_sheet(worksheet)
@@ -191,3 +194,19 @@ def _flatten_config(value: dict[str, Any], prefix: str = "") -> list[dict[str, A
         else:
             rows.append({"key": path, "value": item})
     return rows
+
+
+def _dataframe(rows: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame([_excel_safe_row(row) for row in rows])
+
+
+def _excel_safe_row(row: dict) -> dict:
+    return {key: _excel_safe_value(value) for key, value in row.items()}
+
+
+def _excel_safe_value(value: Any) -> Any:
+    if not isinstance(value, str) or len(value) <= EXCEL_CELL_MAX_CHARS:
+        return value
+    omitted = len(value) - EXCEL_SAFE_CELL_CHARS
+    suffix = f"\n[truncated {omitted} chars for Excel cell limit]"
+    return value[: EXCEL_CELL_MAX_CHARS - len(suffix)] + suffix
