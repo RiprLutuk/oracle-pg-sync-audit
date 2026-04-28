@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from oracle_pg_sync.cli import _apply_lob_override, _apply_where_override, _resolve_tables, build_parser
+from oracle_pg_sync.cli import _apply_lob_override, _apply_profile, _apply_where_override, _resolve_tables, build_parser
 from oracle_pg_sync.config import AppConfig, OracleConfig, PostgresConfig, TableConfig
 from oracle_pg_sync.ops import _expand_bare_lob_flag
 
@@ -109,6 +109,20 @@ tables:
 
         self.assertTrue(args.execute)
         self.assertEqual(args.lob, "stream")
+
+    def test_sync_accepts_profiles_and_lock_flags(self):
+        args = build_parser().parse_args(["sync", "--profile", "every_5min", "--lock-file", "reports/job.lock"])
+
+        self.assertEqual(args.profile, "every_5min")
+        self.assertEqual(args.lock_file, "reports/job.lock")
+
+    def test_profile_every_5min_sets_incremental_upsert(self):
+        args = build_parser().parse_args(["sync", "--profile", "every_5min"])
+
+        _apply_profile(args)
+
+        self.assertTrue(args.incremental)
+        self.assertEqual(args.mode, "upsert")
 
     def test_where_override_updates_table_config(self):
         config = AppConfig(

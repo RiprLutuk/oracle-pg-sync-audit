@@ -12,6 +12,8 @@ def write_html_report(
     column_diff_rows: list[dict],
     sync_rows: list[dict] | None = None,
     checksum_rows: list[dict] | None = None,
+    dependency_rows: list[dict] | None = None,
+    maintenance_rows: list[dict] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     sync_rows = sync_rows or []
@@ -24,6 +26,8 @@ def write_html_report(
     rowcount_mismatch = [row for row in inventory_rows if not row.get("row_count_match")]
     failed_sync = [row for row in sync_rows if row.get("status") in {"FAILED", "WARNING", "SKIPPED"}]
     checksum_rows = checksum_rows or [row for row in sync_rows if row.get("checksum_status")]
+    dependency_rows = dependency_rows or []
+    maintenance_rows = maintenance_rows or []
     lob_rows = [row for row in sync_rows if row.get("lob_columns_detected")]
     dependency_heavy = sorted(
         inventory_rows,
@@ -84,6 +88,10 @@ def write_html_report(
   {_table(checksum_rows[:100], ["table_name", "chunk_key", "status", "row_count_source", "row_count_target", "source_hash", "target_hash"])}
   <h2>LOB Summary</h2>
   {_table(lob_rows[:100], ["table_name", "lob_columns_detected", "lob_columns_synced", "lob_type", "lob_target_type", "lob_strategy_applied", "lob_validation_mode"])}
+  <h2>Object Dependency</h2>
+  {_table(dependency_rows[:100], ["phase", "source_db", "table_name", "object_schema", "object_type", "object_name", "dependency_kind", "details"])}
+  <h2>MV / View Maintenance</h2>
+  {_table(maintenance_rows[:100], ["source_db", "object_schema", "object_type", "object_name", "maintenance_status", "validation_status", "compile_status", "error_message"])}
 </body>
 </html>
 """

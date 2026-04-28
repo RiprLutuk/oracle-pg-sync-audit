@@ -621,6 +621,62 @@ def schema_object_rows(cur, owner: str, object_types: set[str]) -> list[dict[str
     return rows
 
 
+def invalid_object_rows(cur, owner: str) -> list[dict[str, Any]]:
+    owner_u = owner.upper()
+    cur.execute(
+        """
+        SELECT OBJECT_TYPE, OBJECT_NAME, STATUS
+        FROM ALL_OBJECTS
+        WHERE OWNER = :owner
+          AND STATUS <> 'VALID'
+          AND OBJECT_TYPE IN ('VIEW', 'PROCEDURE', 'FUNCTION', 'PACKAGE', 'PACKAGE BODY')
+        ORDER BY OBJECT_TYPE, OBJECT_NAME
+        """,
+        {"owner": owner_u},
+    )
+    return [
+        {
+            "source_db": "oracle",
+            "object_schema": owner_u,
+            "object_type": row[0],
+            "object_name": row[1],
+            "status": row[2],
+        }
+        for row in cur.fetchall()
+    ]
+
+
+def compile_invalid_objects(cur, owner: str) -> list[dict[str, Any]]:
+    rows = invalid_object_rows(cur, owner)
+    for row in rows:
+        object_type = str(row["object_type"]).upper()
+        object_name = str(row["object_name"])
+        try:
+            cur.execute(_compile_statement(owner, object_type, object_name))
+            row["compile_status"] = "attempted"
+            row["error_message"] = ""
+        except Exception as exc:
+            row["compile_status"] = "failed"
+            row["error_message"] = str(exc)
+    return rows
+
+
+def _compile_statement(owner: str, object_type: str, object_name: str) -> str:
+    owner_sql = qident(owner.upper())
+    name_sql = qident(object_name)
+    if object_type == "VIEW":
+        return f"ALTER VIEW {owner_sql}.{name_sql} COMPILE"
+    if object_type == "PROCEDURE":
+        return f"ALTER PROCEDURE {owner_sql}.{name_sql} COMPILE"
+    if object_type == "FUNCTION":
+        return f"ALTER FUNCTION {owner_sql}.{name_sql} COMPILE"
+    if object_type == "PACKAGE BODY":
+        return f"ALTER PACKAGE {owner_sql}.{name_sql} COMPILE BODY"
+    if object_type == "PACKAGE":
+        return f"ALTER PACKAGE {owner_sql}.{name_sql} COMPILE"
+    raise ValueError(f"Unsupported Oracle compile object type: {object_type}")
+
+
 def select_rows(cur, owner: str, table: str, columns: list[tuple[str, str | None]], where: str | None = None):
     select_items = []
     for pg_column, oracle_column in columns:

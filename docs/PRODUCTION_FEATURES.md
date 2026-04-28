@@ -106,6 +106,38 @@ sync:
 
 `staging` meload data penuh ke staging table dulu, lalu target baru di-`TRUNCATE` dan diisi ulang setelah staging selesai. `restart_table` reload target dari awal. Checkpoint table phase mencatat `table_loaded`, `table_validated`, dan `table_committed`; watermark baru diupdate setelah commit.
 
+## Dependency-Safe Sync
+
+`truncate` adalah default production karena object table existing tetap dipertahankan. Setiap `sync`/`all` membuat dependency report:
+
+- `dependency_pre.csv`: dependency risk sebelum load.
+- `dependency_post.csv`: dependency setelah load.
+- `dependency_maintenance.csv`: hasil Oracle compile invalid object, PostgreSQL materialized view refresh, dan validasi dependent object.
+
+Oracle maintenance mencakup invalid `VIEW`, `PROCEDURE`, `FUNCTION`, `PACKAGE`, dan `PACKAGE BODY`. PostgreSQL maintenance mencoba `REFRESH MATERIALIZED VIEW` untuk MV dependent dan memvalidasi keberadaan view/function/procedure/trigger dependent.
+
+Mode `swap` tetap tidak direkomendasikan untuk production dependency-heavy schema. Jika dipakai dengan execute, dependency pre-report dibuat sebelum data berubah agar risk review tersimpan di report run.
+
+## Scheduler Pack
+
+Script siap cron:
+
+```bash
+jobs/daily.sh
+jobs/every_5min.sh
+```
+
+Profile CLI:
+
+```bash
+ops sync --profile daily --go
+ops sync --profile every_5min --go
+```
+
+- `daily`: default ke `truncate` dan full refresh.
+- `every_5min`: default ke `upsert` dan incremental.
+- Scheduler memakai lock file (`reports/daily.lock` / `reports/every_5min.lock`) dan log rotation via `--log-rotate-bytes`.
+
 ## LOB Strategy
 
 Default sync untuk LOB adalah `error`: fail early sebelum data diubah. Ini disengaja agar BLOB/CLOB/NCLOB/LONG besar tidak tersalin tanpa keputusan DBA.

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
+import fcntl
 import logging
 import os
 import shutil
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -121,6 +124,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_production_sync_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--profile", choices=["daily", "every_5min"], help="Apply DBA job defaults for daily or every_5min runs")
     parser.add_argument("--resume", metavar="RUN_ID", help="Resume sync run from checkpoint")
     parser.add_argument("--reset-checkpoint", metavar="RUN_ID", help="Delete checkpoint state for RUN_ID and exit")
     parser.add_argument("--list-runs", action="store_true", help="List checkpoint runs and exit")
@@ -128,15 +132,21 @@ def _add_production_sync_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--full-refresh", action="store_true", help="Ignore incremental watermark filter for this run")
     parser.add_argument("--watermark-status", action="store_true", help="List stored watermarks and exit")
     parser.add_argument("--reset-watermark", metavar="TABLE_NAME", help="Delete stored watermark for TABLE_NAME and exit")
+    parser.add_argument("--lock-file", default="reports/sync.lock", help="Lock file path for scheduled jobs")
+    parser.add_argument("--no-lock", action="store_true", help="Disable lock file protection")
+    parser.add_argument("--log-rotate-bytes", type=int, default=10 * 1024 * 1024, help="Rotate reports/sync.log above this size")
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _apply_profile(args)
     config = load_config(args.config)
     if args.command in {"audit", "sync", "all", "audit-objects", "dependencies"}:
         _ensure_oracle_client_library_path(config, argv)
     report_dir = Path(config.reports.output_dir)
+    _rotate_log(report_dir / "sync.log", max_bytes=int(getattr(args, "log_rotate_bytes", 10 * 1024 * 1024) or 0))
     logger = setup_logging(report_dir, logging.DEBUG if args.verbose else logging.INFO)
+    _maybe_acquire_lock(args, logger)
     direction = _resolve_direction(config, getattr(args, "direction", None)) if args.command in {"sync", "all"} else None
     checkpoint_store = CheckpointStore(config.sync.checkpoint_dir)
 
@@ -245,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
             tables_requested=tables,
             checkpoint_path=str(checkpoint_store.path),
         )
+        dependency_pre_rows = _write_dependency_report(config, tables, logger, report_dir, phase="pre")
         results = _sync_runner(config, logger, direction).sync_tables(
             tables,
             mode_override=args.mode,
@@ -263,11 +274,24 @@ def main(argv: list[str] | None = None) -> int:
         if checksum_rows:
             write_csv(report_dir / "validation_checksum.csv", checksum_rows)
             write_rows_xlsx(report_dir / "validation_checksum.xlsx", checksum_rows, sheet_name="checksum")
+        maintenance_rows = _run_dependency_maintenance(
+            config,
+            tables,
+            logger,
+            report_dir,
+            dependency_pre_rows,
+            execute=args.execute,
+        )
+        dependency_post_rows = _write_dependency_report(config, tables, logger, report_dir, phase="post")
         _write_run_reports(
             manifest,
             report_dir=report_dir,
             sync_rows=rows,
             checksum_rows=checksum_rows,
+            dependency_rows=dependency_pre_rows + dependency_post_rows,
+            maintenance_rows=maintenance_rows,
+            watermark_rows=checkpoint_store.list_watermarks(),
+            checkpoint_rows=checkpoint_store.list_chunks(run_id),
             config=config,
             write_central_report_xlsx=write_central_report_xlsx,
             write_html_report=write_html_report,
@@ -279,6 +303,9 @@ def main(argv: list[str] | None = None) -> int:
             report_files=[
                 str(report_dir / "sync_result.csv"),
                 str(report_dir / "sync_result.xlsx"),
+                str(report_dir / "dependency_pre.csv"),
+                str(report_dir / "dependency_post.csv"),
+                str(report_dir / "dependency_maintenance.csv"),
                 str(manifest.run_dir / "report.xlsx"),
                 str(manifest.run_dir / "report.html"),
                 str(manifest.run_dir / "logs.txt"),
@@ -296,12 +323,16 @@ def main(argv: list[str] | None = None) -> int:
         column_diff_rows = _read_csv(report_dir / "column_diff.csv")
         sync_rows = _read_csv(report_dir / "sync_result.csv")
         checksum_rows = _read_csv(report_dir / "validation_checksum.csv")
+        dependency_rows = _read_csv(report_dir / "dependency_pre.csv") + _read_csv(report_dir / "dependency_post.csv")
+        maintenance_rows = _read_csv(report_dir / "dependency_maintenance.csv")
         write_html_report(
             report_dir / "report.html",
             inventory_rows=inventory_rows,
             column_diff_rows=column_diff_rows,
             sync_rows=sync_rows,
             checksum_rows=checksum_rows,
+            dependency_rows=dependency_rows,
+            maintenance_rows=maintenance_rows,
         )
         logger.info("HTML report dibuat: %s", report_dir / "report.html")
         return 0
@@ -354,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         logger.info("Step 1/3 audit awal")
         run_audit(config, tables, logger, workers=args.workers)
+        dependency_pre_rows = _write_dependency_report(config, tables, logger, report_dir, phase="pre")
         logger.info("Step 2/3 sync direction=%s", direction)
         sync_results = _sync_runner(config, logger, direction).sync_tables(
             tables,
@@ -373,11 +405,24 @@ def main(argv: list[str] | None = None) -> int:
         if checksum_rows:
             write_csv(report_dir / "validation_checksum.csv", checksum_rows)
             write_rows_xlsx(report_dir / "validation_checksum.xlsx", checksum_rows, sheet_name="checksum")
+        maintenance_rows = _run_dependency_maintenance(
+            config,
+            tables,
+            logger,
+            report_dir,
+            dependency_pre_rows,
+            execute=args.execute,
+        )
+        dependency_post_rows = _write_dependency_report(config, tables, logger, report_dir, phase="post")
         _write_run_reports(
             manifest,
             report_dir=report_dir,
             sync_rows=sync_rows,
             checksum_rows=checksum_rows,
+            dependency_rows=dependency_pre_rows + dependency_post_rows,
+            maintenance_rows=maintenance_rows,
+            watermark_rows=checkpoint_store.list_watermarks(),
+            checkpoint_rows=checkpoint_store.list_chunks(run_id),
             config=config,
             write_central_report_xlsx=write_central_report_xlsx,
             write_html_report=write_html_report,
@@ -403,6 +448,9 @@ def main(argv: list[str] | None = None) -> int:
             report_files=[
                 str(report_dir / "sync_result.csv"),
                 str(report_dir / "inventory_summary.csv"),
+                str(report_dir / "dependency_pre.csv"),
+                str(report_dir / "dependency_post.csv"),
+                str(report_dir / "dependency_maintenance.csv"),
                 str(report_dir / "report.html"),
                 str(manifest.run_dir / "report.xlsx"),
                 str(manifest.run_dir / "report.html"),
@@ -728,6 +776,61 @@ def _count(rows: list[dict], status: str) -> int:
     return sum(1 for row in rows if row.get("status") == status)
 
 
+def _write_dependency_report(
+    config: AppConfig,
+    tables: list[str],
+    logger: logging.Logger,
+    report_dir: Path,
+    *,
+    phase: str,
+) -> list[dict]:
+    from oracle_pg_sync.reports.writer_csv import write_csv
+
+    rows = run_table_dependency_audit(config, tables, logger)
+    rows = [{**row, "phase": phase} for row in rows]
+    write_csv(report_dir / f"dependency_{phase}.csv", rows)
+    logger.info("Dependency %s report dibuat rows=%s", phase, len(rows))
+    return rows
+
+
+def _run_dependency_maintenance(
+    config: AppConfig,
+    tables: list[str],
+    logger: logging.Logger,
+    report_dir: Path,
+    dependency_rows: list[dict],
+    *,
+    execute: bool,
+) -> list[dict]:
+    from oracle_pg_sync.db import oracle, postgres
+    from oracle_pg_sync.reports.writer_csv import write_csv
+
+    if not execute:
+        write_csv(report_dir / "dependency_maintenance.csv", [])
+        return []
+    rows: list[dict] = []
+    try:
+        with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+            with ocon.cursor() as ocur, pcon.cursor() as pcur:
+                rows.extend(oracle.compile_invalid_objects(ocur, config.oracle.schema))
+                ocon.commit()
+                rows.extend(postgres.refresh_materialized_views(pcur, dependency_rows))
+                rows.extend(postgres.validate_dependent_objects(pcur, dependency_rows))
+    except Exception as exc:
+        logger.exception("Dependency maintenance failed")
+        rows.append({
+            "source_db": "",
+            "object_schema": "",
+            "object_type": "DEPENDENCY_MAINTENANCE",
+            "object_name": "",
+            "maintenance_status": "failed",
+            "error_message": str(exc),
+        })
+    write_csv(report_dir / "dependency_maintenance.csv", rows)
+    logger.info("Dependency maintenance selesai rows=%s tables=%s", len(rows), len(tables))
+    return rows
+
+
 def _checksum_rows_from_results(results: list, fallback_rows: list[dict]) -> list[dict]:
     rows: list[dict] = []
     for result in results:
@@ -737,12 +840,63 @@ def _checksum_rows_from_results(results: list, fallback_rows: list[dict]) -> lis
     return [row for row in fallback_rows if row.get("checksum_status")]
 
 
+def _apply_profile(args: argparse.Namespace) -> None:
+    profile = getattr(args, "profile", None)
+    if profile == "daily":
+        if getattr(args, "mode", None) is None:
+            args.mode = "truncate"
+        args.full_refresh = True
+    elif profile == "every_5min":
+        if getattr(args, "mode", None) is None:
+            args.mode = "upsert"
+        args.incremental = True
+
+
+def _rotate_log(path: Path, *, max_bytes: int) -> None:
+    if max_bytes <= 0 or not path.exists() or path.stat().st_size <= max_bytes:
+        return
+    token = time.strftime("%Y%m%d_%H%M%S")
+    path.rename(path.with_name(f"{path.stem}_{token}{path.suffix}"))
+
+
+def _maybe_acquire_lock(args: argparse.Namespace, logger: logging.Logger):
+    if getattr(args, "command", "") not in {"sync", "all"} or getattr(args, "no_lock", False):
+        return None
+    if any(getattr(args, attr, None) for attr in ("list_runs", "reset_checkpoint", "watermark_status", "reset_watermark")):
+        return None
+    path = Path(getattr(args, "lock_file", "reports/sync.lock"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(f"Another sync job is running; lock file: {path}")
+    handle.write(f"pid={os.getpid()} started_at={time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
+    handle.flush()
+    atexit.register(_release_lock, handle, path)
+    logger.info("Lock acquired: %s", path)
+    return handle
+
+
+def _release_lock(handle, path: Path) -> None:
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _write_run_reports(
     manifest: RunManifest,
     *,
     report_dir: Path,
     sync_rows: list[dict],
     checksum_rows: list[dict],
+    dependency_rows: list[dict] | None = None,
+    maintenance_rows: list[dict] | None = None,
+    watermark_rows: list[dict] | None = None,
+    checkpoint_rows: list[dict] | None = None,
     config: AppConfig,
     write_central_report_xlsx,
     write_html_report,
@@ -753,6 +907,10 @@ def _write_run_reports(
         run_dir / "report.xlsx",
         sync_rows=sync_rows,
         checksum_rows=checksum_rows,
+        dependency_rows=dependency_rows or [],
+        maintenance_rows=maintenance_rows or [],
+        watermark_rows=watermark_rows or [],
+        checkpoint_rows=checkpoint_rows or [],
         config_sanitized=sanitize(config),
     )
     write_html_report(
@@ -761,6 +919,8 @@ def _write_run_reports(
         column_diff_rows=[],
         sync_rows=sync_rows,
         checksum_rows=checksum_rows,
+        dependency_rows=dependency_rows or [],
+        maintenance_rows=maintenance_rows or [],
     )
     log_path = report_dir / "sync.log"
     if log_path.exists():

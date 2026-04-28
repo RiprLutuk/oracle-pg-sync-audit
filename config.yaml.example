@@ -1,5 +1,4 @@
 env_file: .env
-
 oracle:
   dsn: ${ORACLE_DSN}
   host: ${ORACLE_HOST}
@@ -10,7 +9,6 @@ oracle:
   password: ${ORACLE_PASSWORD}
   schema: ${ORACLE_SCHEMA}
   client_lib_dir: ${ORACLE_CLIENT_LIB_DIR}
-
 postgres:
   host: ${PG_HOST}
   port: ${PG_PORT}
@@ -18,7 +16,6 @@ postgres:
   user: ${PG_USER}
   password: ${PG_PASSWORD}
   schema: ${PG_SCHEMA:-public}
-
 sync:
   default_direction: oracle-to-postgres
   default_mode: truncate
@@ -36,16 +33,14 @@ sync:
   max_swap_table_bytes: 20GiB
   swap_space_multiplier: 2.5
   keep_old_after_swap: false
-  copy_null: ""
+  copy_null: ''
   pg_lock_timeout: 5s
-  pg_statement_timeout: "0"
+  pg_statement_timeout: '0'
   checkpoint_dir: reports/checkpoints/checkpoint.sqlite3
   truncate_resume_strategy: staging
   staging_schema: null
-
 reports:
   output_dir: reports
-
 validation:
   checksum:
     enabled: false
@@ -55,9 +50,7 @@ validation:
     columns: auto
     exclude_columns: []
     sample_percent: 1
-
 lob_strategy:
-  # Sync default is intentionally safe: fail if a LOB is detected unless a table/column overrides it.
   default: error
   stream_batch_size: 100
   lob_chunk_size_bytes: 1048576
@@ -67,85 +60,9 @@ lob_strategy:
   warn_on_lob_larger_than_mb: 50
   fail_on_lob_larger_than_mb: null
   columns: {}
-
 rename_columns:
   public.sample_customer:
     legacy_status: status
   public.sample_order:
     legacy_note: note_text
-
-tables:
-  - name: public.sample_customer
-    oracle_to_postgres_mode: truncate
-    directions:
-      - oracle-to-postgres
-    key_columns: [customer_id]
-    incremental:
-      enabled: true
-      strategy: updated_at
-      column: updated_at
-      initial_value: null
-      overlap_minutes: 5
-      delete_detection: false
-    validation:
-      checksum:
-        enabled: true
-        mode: chunk
-        columns: auto
-        exclude_columns: []
-
-  - name: public.sample_order
-    oracle_to_postgres_mode: truncate
-    postgres_to_oracle_mode: truncate
-    directions:
-      - oracle-to-postgres
-      - postgres-to-oracle
-    key_columns: [order_id]
-
-  - name: public.sample_audit_log
-    oracle_to_postgres_mode: append
-    directions:
-      - oracle-to-postgres
-    key_columns: [audit_id]
-    incremental:
-      enabled: true
-      strategy: numeric_key
-      column: AUDIT_ID
-      initial_value: 0
-
-  - source_schema: SAMPLE_APP
-    source_table: SAMPLE_BLOB_TABLE
-    target_schema: public
-    target_table: sample_blob_table
-    primary_key:
-      - record_id
-    incremental:
-      enabled: true
-      strategy: updated_at
-      column: updated_at
-      overlap_minutes: 10
-    lob_strategy:
-      columns:
-        BLOB_PAYLOAD:
-          strategy: stream
-          target_type: bytea
-          validation: size_hash
-    validation:
-      checksum:
-        enabled: true
-        mode: chunk
-        exclude_columns:
-          - BLOB_PAYLOAD
-
-  - source_schema: SAMPLE_APP
-    source_table: SAMPLE_CLOB_TABLE
-    target_schema: public
-    target_table: sample_clob_table
-    primary_key:
-      - record_id
-    lob_strategy:
-      columns:
-        JSON_DATA:
-          strategy: stream
-          target_type: text
-          validation: size_hash
+tables_file: configs/tables.example.yaml

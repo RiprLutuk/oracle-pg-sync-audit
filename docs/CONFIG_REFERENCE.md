@@ -273,6 +273,14 @@ tables_file: configs/tables.yaml
 
 Jangan isi `tables:` inline bersamaan dengan `tables_file`; loader akan menolak kombinasi itu agar tidak ada dua sumber table yang berbeda.
 
+File contoh table list ada di:
+
+```text
+configs/tables.example.yaml
+```
+
+Contoh itu mencakup `where`, `key_columns`, `incremental`, checksum chunk, dan `lob_strategy`.
+
 Checksum validation:
 
 ```yaml

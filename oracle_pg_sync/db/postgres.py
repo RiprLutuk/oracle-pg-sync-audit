@@ -583,6 +583,107 @@ def schema_object_rows(
     return rows
 
 
+def refresh_materialized_views(cur, dependency_rows: list[dict[str, Any]], *, concurrently: bool = False) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str]] = set()
+    rows: list[dict[str, Any]] = []
+    for row in dependency_rows:
+        object_type = str(row.get("object_type") or "").upper()
+        if object_type != "MATERIALIZED VIEW":
+            continue
+        schema = str(row.get("object_schema") or "")
+        name = str(row.get("object_name") or "")
+        if not schema or not name or (schema, name) in seen:
+            continue
+        seen.add((schema, name))
+        statement = sql.SQL("REFRESH MATERIALIZED VIEW {}{}").format(
+            sql.SQL("CONCURRENTLY ") if concurrently else sql.SQL(""),
+            table_ident(schema, name),
+        )
+        try:
+            cur.execute(statement)
+            rows.append({
+                "source_db": "postgres",
+                "object_schema": schema,
+                "object_type": "MATERIALIZED VIEW",
+                "object_name": name,
+                "maintenance_status": "refreshed",
+                "error_message": "",
+            })
+        except Exception as exc:
+            rows.append({
+                "source_db": "postgres",
+                "object_schema": schema,
+                "object_type": "MATERIALIZED VIEW",
+                "object_name": name,
+                "maintenance_status": "failed",
+                "error_message": str(exc),
+            })
+    return rows
+
+
+def validate_dependent_objects(cur, dependency_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in dependency_rows:
+        object_type = str(row.get("object_type") or "").upper()
+        if object_type not in {"VIEW", "MATERIALIZED VIEW", "FUNCTION", "PROCEDURE", "TRIGGER"}:
+            continue
+        schema = str(row.get("object_schema") or "")
+        name = str(row.get("object_name") or "")
+        if not schema or not name:
+            continue
+        exists = dependent_object_exists(cur, schema, name, object_type)
+        rows.append({
+            "source_db": "postgres",
+            "object_schema": schema,
+            "object_type": object_type,
+            "object_name": name,
+            "validation_status": "exists" if exists else "missing",
+        })
+    return rows
+
+
+def dependent_object_exists(cur, schema: str, name: str, object_type: str) -> bool:
+    relkind_by_type = {
+        "VIEW": ("v",),
+        "MATERIALIZED VIEW": ("m",),
+    }
+    if object_type in relkind_by_type:
+        cur.execute(
+            """
+            SELECT 1
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s AND c.relname = %s AND c.relkind = ANY(%s)
+            """,
+            (schema, name, list(relkind_by_type[object_type])),
+        )
+        return cur.fetchone() is not None
+    if object_type in {"FUNCTION", "PROCEDURE"}:
+        cur.execute(
+            """
+            SELECT 1
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = %s AND p.proname = %s
+            """,
+            (schema, name),
+        )
+        return cur.fetchone() is not None
+    if object_type == "TRIGGER":
+        cur.execute(
+            """
+            SELECT 1
+            FROM pg_trigger t
+            JOIN pg_class c ON c.oid = t.tgrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s AND t.tgname = %s
+            """,
+            (schema, name),
+        )
+        return cur.fetchone() is not None
+    return False
+
+
 def truncate_table(cur, schema: str, table: str, *, cascade: bool = False) -> None:
     stmt = sql.SQL("TRUNCATE TABLE {}{}").format(
         table_ident(schema, table),

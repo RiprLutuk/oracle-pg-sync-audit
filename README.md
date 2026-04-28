@@ -191,6 +191,9 @@ Oracle ke PostgreSQL memakai PostgreSQL `COPY FROM STDIN`. PostgreSQL ke Oracle 
 - Checksum validation dapat diaktifkan untuk mendeteksi mismatch data selain rowcount.
 - LOB sync default `error`; pilih `skip`, `null`, `stream`, atau `include` secara eksplisit. Oracle `BLOB`, `CLOB`, `NCLOB`, `LONG`, dan `LONG RAW` terdeteksi end-to-end, dengan mapping aman ke PostgreSQL `bytea`/`text`.
 - DBA shortcut CLI tersedia sebagai `ops`, misalnya `ops sync --go --lob stream`, `ops resume RUN_ID`, `ops status`, `ops watermarks`, dan `ops reset-watermark TABLE`.
+- Sync membuat dependency report sebelum dan sesudah load: `dependency_pre.csv` dan `dependency_post.csv`. Mode `swap` wajib punya risk/dependency report sebelum execute.
+- Saat execute, toolkit mencoba maintenance dependency: Oracle invalid object compile dan PostgreSQL materialized view refresh + validasi view/function dependent.
+- Scheduler pack tersedia di `jobs/daily.sh` dan `jobs/every_5min.sh`; keduanya memakai `--profile`, lock file, dan log rotation.
 - Default `parallel_workers: 1`, `fast_count: true`, dan `exact_count_after_load: false` supaya tidak terlalu berat di client/server.
 - PostgreSQL `pg_lock_timeout: 5s` membuat sync gagal cepat jika table sedang terkunci, bukan menunggu lock lama.
 - Jika struktur mismatch fatal, table di-skip kecuali pakai `--force`.

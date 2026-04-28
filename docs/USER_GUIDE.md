@@ -108,8 +108,9 @@ Nama table boleh `sample_customer` atau `public.sample_customer`. Jika schema ti
 
 `config.yaml` bawaan sudah diisi dari script lama di folder `example/`:
 
-- `config.yaml.example` dan `configs/tables.yaml.example` sengaja memakai table dummy.
+- `config.yaml.example` dan `configs/tables.example.yaml` sengaja memakai table dummy.
 - Copy table list real dari environment lokal ke `configs/tables.yaml`, lalu pastikan `config.yaml` berisi `tables_file: configs/tables.yaml`.
+- Gunakan `configs/tables.example.yaml` sebagai template table list baru.
 
 ## 5. Rename Column Mapping
 
@@ -267,6 +268,15 @@ Incremental sync berbasis config table:
 python -m oracle_pg_sync sync --config config.yaml --tables-file configs/tables.yaml --incremental
 python -m oracle_pg_sync sync --config config.yaml --tables-file configs/tables.yaml --incremental --execute
 ```
+
+Scheduler shortcut:
+
+```bash
+jobs/daily.sh
+jobs/every_5min.sh
+```
+
+Keduanya memakai profile CLI, lock file, dan log rotation. Override config path dengan `CONFIG_PATH=/path/config.yaml`.
 
 Cek watermark:
 

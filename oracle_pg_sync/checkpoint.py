@@ -237,6 +237,17 @@ class CheckpointStore:
             ).fetchall()
         return {str(row[0]) for row in rows}
 
+    def list_chunks(self, run_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM sync_chunks"
+        params: tuple[Any, ...] = ()
+        if run_id:
+            query += " WHERE run_id = ?"
+            params = (run_id,)
+        query += " ORDER BY table_name, chunk_key"
+        with self.connect() as con:
+            con.row_factory = sqlite3.Row
+            return [dict(row) for row in con.execute(query, params)]
+
     def get_watermark(self, *, direction: str, table_name: str, strategy: str, column_name: str) -> str | None:
         with self.connect() as con:
             row = con.execute(

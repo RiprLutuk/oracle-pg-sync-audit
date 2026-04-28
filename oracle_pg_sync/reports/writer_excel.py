@@ -22,27 +22,31 @@ def write_central_report_xlsx(
     *,
     sync_rows: list[dict] | None = None,
     checksum_rows: list[dict] | None = None,
+    dependency_rows: list[dict] | None = None,
+    maintenance_rows: list[dict] | None = None,
+    watermark_rows: list[dict] | None = None,
+    checkpoint_rows: list[dict] | None = None,
     config_sanitized: dict[str, Any] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     sync_rows = sync_rows or []
     checksum_rows = checksum_rows or []
+    dependency_rows = dependency_rows or []
+    maintenance_rows = maintenance_rows or []
+    watermark_rows = watermark_rows or []
+    checkpoint_rows = checkpoint_rows or []
     sheets = {
-        "00_Dashboard": [_dashboard_row(sync_rows, checksum_rows)],
-        "01_Run_Summary": sync_rows,
-        "02_Table_Sync_Status": sync_rows,
-        "03_Rowcount_Compare": sync_rows,
-        "04_Checksum_Result": checksum_rows,
-        "05_Column_Structure_Diff": [],
-        "06_Index_Compare": [],
-        "07_View_SP_Sequence": [],
-        "08_LOB_Columns": [row for row in sync_rows if row.get("lob_columns_detected")],
-        "09_Failed_Tables": [row for row in sync_rows if row.get("status") in {"FAILED", "WARNING", "SKIPPED"}],
-        "10_Watermark": [],
-        "11_Checkpoint_Resume": [],
-        "12_Performance": sync_rows,
-        "13_Errors_Log": [{"table_name": row.get("table_name"), "message": row.get("message")} for row in sync_rows if row.get("message")],
-        "14_Config_Sanitized": _flatten_config(config_sanitized or {}),
+        "dashboard": [_dashboard_row(sync_rows, checksum_rows)],
+        "table_status": sync_rows,
+        "rowcount": sync_rows,
+        "checksum": checksum_rows,
+        "lob": [row for row in sync_rows if row.get("lob_columns_detected")],
+        "object_dependency": dependency_rows,
+        "mv_view": maintenance_rows,
+        "errors": [{"table_name": row.get("table_name"), "message": row.get("message")} for row in sync_rows if row.get("message")],
+        "watermark": watermark_rows,
+        "checkpoint": checkpoint_rows,
+        "config_sanitized": _flatten_config(config_sanitized or {}),
     }
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         for name, rows in sheets.items():
