@@ -1,6 +1,6 @@
 # oracle-pg-sync-audit
 
-[![CI](https://github.com/RiprLutuk/oracle-to-postgre-to-oracle/actions/workflows/ci.yml/badge.svg)](https://github.com/RiprLutuk/oracle-to-postgre-to-oracle/actions/workflows/ci.yml)
+[![CI](https://github.com/RiprLutuk/oracle-pg-sync-audit/actions/workflows/ci.yml/badge.svg)](https://github.com/RiprLutuk/oracle-pg-sync-audit/actions/workflows/ci.yml)
 
 Project ini menyatukan audit metadata, compare rowcount, sync data Oracle ke PostgreSQL, sync reverse PostgreSQL ke Oracle, dan reporting DBA dalam satu CLI modular.
 
@@ -71,17 +71,13 @@ cp config.yaml.example config.yaml
 
 Isi koneksi di `.env`. Password tidak hardcode di YAML, cukup pakai placeholder seperti `${ORACLE_PASSWORD}` dan `${PG_PASSWORD}`.
 
-Contoh table config:
+Main config menunjuk table list terpisah:
 
 ```yaml
-tables:
-  - name: public.sample_customer
-    mode: truncate
-    key_columns: [customer_id]
-  - name: public.sample_order
-    mode: truncate
-    key_columns: [order_id]
+tables_file: configs/tables.yaml
 ```
+
+Gunakan `configs/tables.example.yaml` sebagai template untuk `where`, `key_columns`, incremental, checksum, dan LOB strategy.
 
 Rename column Oracle ke PostgreSQL:
 
@@ -144,6 +140,17 @@ Generate ulang HTML dari CSV:
 python -m oracle_pg_sync report --config config.yaml
 ```
 
+DBA-friendly alias:
+
+```bash
+ops audit
+ops sync
+ops sync --go
+ops resume
+ops status
+ops report latest
+```
+
 Audit, sync, audit ulang, report:
 
 ```bash
@@ -194,6 +201,7 @@ Oracle ke PostgreSQL memakai PostgreSQL `COPY FROM STDIN`. PostgreSQL ke Oracle 
 - Sync membuat dependency report sebelum dan sesudah load: `dependency_pre.csv` dan `dependency_post.csv`. Mode `swap` wajib punya risk/dependency report sebelum execute.
 - Saat execute, toolkit mencoba maintenance dependency: Oracle invalid object compile dan PostgreSQL materialized view refresh + validasi view/function dependent.
 - Scheduler pack tersedia di `jobs/daily.sh` dan `jobs/every_5min.sh`; keduanya memakai `--profile`, lock file, dan log rotation.
+- Cron template tersedia di `jobs/crontab.example`. Set `ALERT_COMMAND` untuk menerima alert saat job keluar non-zero.
 - Default `parallel_workers: 1`, `fast_count: true`, dan `exact_count_after_load: false` supaya tidak terlalu berat di client/server.
 - PostgreSQL `pg_lock_timeout: 5s` membuat sync gagal cepat jika table sedang terkunci, bukan menunggu lock lama.
 - Jika struktur mismatch fatal, table di-skip kecuali pakai `--force`.
@@ -220,6 +228,12 @@ Test unit yang tidak butuh koneksi database:
 
 ```bash
 PYTHONPATH=. python -m unittest discover -s tests
+```
+
+Integration check opsional untuk PostgreSQL container + fake Oracle MERGE:
+
+```bash
+RUN_CONTAINER_TESTS=1 python tests/integration_reverse_merge_container.py
 ```
 
 Untuk panduan operasional detail, mulai dari [Quick Start](docs/USER_GUIDE.md).

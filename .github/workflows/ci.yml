@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
   test:
@@ -26,10 +28,21 @@ jobs:
           pip install -r requirements.txt
 
       - name: Compile
-        run: python -m compileall oracle_pg_sync tests
+        run: python -m compileall -q oracle_pg_sync tests
 
       - name: Unit tests
         run: python -m unittest discover -s tests
+
+      - name: Validate examples
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          for path in ["config.yaml.example", "configs/tables.example.yaml"]:
+              data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+              assert data is not None, path
+          PY
 
       - name: Parse config example
         run: |

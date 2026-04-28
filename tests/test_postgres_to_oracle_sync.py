@@ -4,6 +4,7 @@ from pathlib import Path
 
 from oracle_pg_sync.checkpoint import CheckpointStore
 from oracle_pg_sync.config import AppConfig, IncrementalConfig, OracleConfig, PostgresConfig, TableConfig
+from oracle_pg_sync.db import oracle
 from oracle_pg_sync.sync.postgres_to_oracle import PostgresToOracleSync, _apply_checksum_summary
 
 
@@ -63,6 +64,39 @@ class PostgresToOracleSyncTest(unittest.TestCase):
         self.assertEqual(result.checksum_status, "MISMATCH")
         self.assertEqual(result.checksum_source_rows, 2)
         self.assertEqual(result.checksum_target_hash, "b")
+
+    def test_oracle_merge_rows_uses_merge_and_bind_rows(self):
+        class Cursor:
+            def __init__(self):
+                self.statement = ""
+                self.rows = []
+
+            def execute(self, query, params=None):
+                if "ALL_TABLES" in query:
+                    self._fetchone = ("SAMPLE",)
+
+            def fetchone(self):
+                return getattr(self, "_fetchone", None)
+
+            def executemany(self, statement, rows):
+                self.statement = statement
+                self.rows = rows
+
+        cur = Cursor()
+
+        count = oracle.merge_rows(
+            cur,
+            owner="APP",
+            table="SAMPLE",
+            oracle_columns=["ID", "NAME"],
+            key_columns=["ID"],
+            rows=[(1, "Alice")],
+        )
+
+        self.assertEqual(count, 1)
+        self.assertIn("MERGE INTO", cur.statement)
+        self.assertIn('WHEN MATCHED THEN UPDATE SET t."NAME" = s."NAME"', cur.statement)
+        self.assertEqual(cur.rows, [(1, "Alice")])
 
 
 if __name__ == "__main__":

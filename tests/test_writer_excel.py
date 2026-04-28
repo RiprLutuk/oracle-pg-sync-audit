@@ -26,11 +26,11 @@ class WriterExcelTest(unittest.TestCase):
 
             workbook = load_workbook(path)
 
-        self.assertIn("dashboard", workbook.sheetnames)
-        self.assertIn("table_status", workbook.sheetnames)
-        self.assertIn("checksum", workbook.sheetnames)
-        self.assertIn("object_dependency", workbook.sheetnames)
-        self.assertIn("checkpoint", workbook.sheetnames)
+        self.assertIn("00_Dashboard", workbook.sheetnames)
+        self.assertIn("01_Table_Status", workbook.sheetnames)
+        self.assertIn("03_Checksum", workbook.sheetnames)
+        self.assertIn("05_Object_Dependency", workbook.sheetnames)
+        self.assertIn("08_Checkpoint", workbook.sheetnames)
 
 
 if __name__ == "__main__":

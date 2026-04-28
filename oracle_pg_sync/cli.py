@@ -812,9 +812,9 @@ def _run_dependency_maintenance(
     try:
         with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
             with ocon.cursor() as ocur, pcon.cursor() as pcur:
+                rows.extend(postgres.refresh_materialized_views(pcur, dependency_rows))
                 rows.extend(oracle.compile_invalid_objects(ocur, config.oracle.schema))
                 ocon.commit()
-                rows.extend(postgres.refresh_materialized_views(pcur, dependency_rows))
                 rows.extend(postgres.validate_dependent_objects(pcur, dependency_rows))
     except Exception as exc:
         logger.exception("Dependency maintenance failed")

@@ -36,17 +36,17 @@ def write_central_report_xlsx(
     watermark_rows = watermark_rows or []
     checkpoint_rows = checkpoint_rows or []
     sheets = {
-        "dashboard": [_dashboard_row(sync_rows, checksum_rows)],
-        "table_status": sync_rows,
-        "rowcount": sync_rows,
-        "checksum": checksum_rows,
-        "lob": [row for row in sync_rows if row.get("lob_columns_detected")],
-        "object_dependency": dependency_rows,
-        "mv_view": maintenance_rows,
-        "errors": [{"table_name": row.get("table_name"), "message": row.get("message")} for row in sync_rows if row.get("message")],
-        "watermark": watermark_rows,
-        "checkpoint": checkpoint_rows,
-        "config_sanitized": _flatten_config(config_sanitized or {}),
+        "00_Dashboard": [_dashboard_row(sync_rows, checksum_rows)],
+        "01_Table_Status": sync_rows,
+        "02_Rowcount": sync_rows,
+        "03_Checksum": checksum_rows,
+        "04_LOB": [row for row in sync_rows if row.get("lob_columns_detected")],
+        "05_Object_Dependency": dependency_rows,
+        "06_MV_View": maintenance_rows,
+        "07_Watermark": watermark_rows,
+        "08_Checkpoint": checkpoint_rows,
+        "09_Errors": [{"table_name": row.get("table_name"), "message": row.get("message")} for row in sync_rows if row.get("message")],
+        "10_Config_Sanitized": _flatten_config(config_sanitized or {}),
     }
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         for name, rows in sheets.items():

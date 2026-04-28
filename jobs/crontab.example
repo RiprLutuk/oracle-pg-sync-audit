@@ -1,0 +1,11 @@
+# Run from the repository checkout. Logs are written to reports/job_logs/.
+SHELL=/bin/bash
+CONFIG_PATH=/home/app/oracle-pg-sync-audit/config.yaml
+# Optional alert command. It receives ALERT_MESSAGE in the environment.
+# ALERT_COMMAND='printf "%s\n" "$ALERT_MESSAGE" | mail -s "oracle-pg-sync failed" dba@example.com'
+
+# Full dependency-safe refresh once per day.
+15 1 * * * cd /home/app/oracle-pg-sync-audit && jobs/daily.sh
+
+# Incremental upsert every five minutes.
+*/5 * * * * cd /home/app/oracle-pg-sync-audit && jobs/every_5min.sh

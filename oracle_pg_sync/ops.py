@@ -19,6 +19,9 @@ def main(argv: list[str] | None = None) -> int:
     if command in {"audit", "sync"}:
         return cli_main([command, *rest])
     if command == "report":
+        if rest and rest[0] == "latest":
+            _print_latest_report(rest[1:])
+            return 0
         if rest and not rest[0].startswith("-"):
             rest = rest[1:]
         return cli_main(["report", *rest])
@@ -68,6 +71,19 @@ def _print_status(args: list[str]) -> None:
     print(f"started_at,{latest.get('started_at', '')}")
     print(f"finished_at,{latest.get('finished_at', '')}")
     print(f"report_path,{manifests[0].parent if manifests else report_dir}")
+
+
+def _print_latest_report(args: list[str]) -> None:
+    config = load_config(_config_path(args))
+    report_dir = Path(config.reports.output_dir)
+    manifests = sorted(report_dir.glob("run_*/manifest.json"), reverse=True)
+    if not manifests:
+        print(f"report_path,{report_dir / 'report.html'}")
+        return
+    run_dir = manifests[0].parent
+    print(f"report_path,{run_dir / 'report.html'}")
+    print(f"excel_path,{run_dir / 'report.xlsx'}")
+    print(f"manifest_path,{run_dir / 'manifest.json'}")
 
 
 def _config_path(args: list[str]) -> str:

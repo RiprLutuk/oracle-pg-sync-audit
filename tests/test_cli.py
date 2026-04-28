@@ -1,10 +1,12 @@
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 from oracle_pg_sync.cli import _apply_lob_override, _apply_profile, _apply_where_override, _resolve_tables, build_parser
 from oracle_pg_sync.config import AppConfig, OracleConfig, PostgresConfig, TableConfig
-from oracle_pg_sync.ops import _expand_bare_lob_flag
+from oracle_pg_sync.ops import _expand_bare_lob_flag, main as ops_main
 
 
 class CliTest(unittest.TestCase):
@@ -144,6 +146,24 @@ tables:
 
     def test_ops_validate_bare_lob_defaults_to_stream(self):
         self.assertEqual(_expand_bare_lob_flag(["--lob", "--tables", "sample"]), ["--lob", "stream", "--tables", "sample"])
+
+    def test_ops_report_latest_without_reports_is_successful(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text(
+                f"""
+oracle:
+  schema: APP
+postgres:
+  schema: public
+reports:
+  output_dir: {tmp}/reports
+""",
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(StringIO()):
+                self.assertEqual(ops_main(["report", "latest", "--config", str(config_path)]), 0)
 
 
 if __name__ == "__main__":
