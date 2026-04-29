@@ -91,8 +91,17 @@ class RunManifest:
         self.data["tables_processed"] = len(result_rows)
         self.data["tables_success"] = sum(1 for row in result_rows if row.get("status") in {"SUCCESS", "DRY_RUN"})
         self.data["tables_failed"] = sum(1 for row in result_rows if row.get("status") == "FAILED")
-        self.data["rows_written"] = sum(int(row.get("rows_loaded") or 0) for row in result_rows)
-        self.data["rows_read"] = self.data["rows_written"]
+        self.data["rows_written"] = sum(int(row.get("rows_written_to_postgres") or row.get("rows_loaded") or 0) for row in result_rows)
+        self.data["rows_read"] = sum(int(row.get("rows_read_from_oracle") or row.get("rows_loaded") or 0) for row in result_rows)
+        self.data["result_rows"] = result_rows
+        validation_failed = sum(1 for row in result_rows if str(row.get("validation_status", "")).lower() == "validation_failed")
+        validation_pass = sum(1 for row in result_rows if str(row.get("validation_status", "")).lower() == "validation_pass" or row.get("row_count_match") is True)
+        self.data["validation_summary"] = {
+            "validation_pass": validation_pass,
+            "validation_failed": validation_failed,
+            "sync_success_but_validation_failed": 0,
+            "rowcount_mismatch": sum(1 for row in result_rows if row.get("row_count_match") is False),
+        }
         self.data["checksum_summary"] = {
             "total": len(checksum_rows),
             "match": sum(1 for row in checksum_rows if row.get("status") == "MATCH"),

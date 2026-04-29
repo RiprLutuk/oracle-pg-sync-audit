@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
@@ -45,6 +46,23 @@ class SyncResult:
     mode: str
     status: str
     rows_loaded: int = 0
+    source_schema: str = ""
+    source_table: str = ""
+    target_schema: str = ""
+    target_table: str = ""
+    effective_where: str = ""
+    oracle_count_sql_summary: str = ""
+    postgres_count_sql_summary: str = ""
+    rows_read_from_oracle: int = 0
+    rows_written_to_postgres: int = 0
+    rows_failed: int = 0
+    row_count_diff: int | None = None
+    validation_status: str = ""
+    failed_row_samples: list[dict[str, Any]] = field(default_factory=list)
+    missing_key_report_files: str = ""
+    lob_copy_status: str = ""
+    lob_columns_included: str = ""
+    lob_columns_excluded_from_checksum: str = ""
     oracle_row_count: int | None = None
     postgres_row_count: int | None = None
     row_count_match: bool | None = None
@@ -88,9 +106,26 @@ class SyncResult:
             "mode": self.mode,
             "status": self.status,
             "rows_loaded": self.rows_loaded,
+            "source_schema": self.source_schema,
+            "source_table": self.source_table,
+            "target_schema": self.target_schema,
+            "target_table": self.target_table,
+            "effective_where": self.effective_where,
+            "oracle_count_sql_summary": self.oracle_count_sql_summary,
+            "postgres_count_sql_summary": self.postgres_count_sql_summary,
+            "rows_read_from_oracle": self.rows_read_from_oracle,
+            "rows_written_to_postgres": self.rows_written_to_postgres,
+            "rows_failed": self.rows_failed,
             "oracle_row_count": self.oracle_row_count,
             "postgres_row_count": self.postgres_row_count,
             "row_count_match": self.row_count_match,
+            "row_count_diff": self.row_count_diff,
+            "validation_status": self.validation_status,
+            "failed_row_samples": json.dumps(self.failed_row_samples, ensure_ascii=True) if self.failed_row_samples else "",
+            "missing_key_report_files": self.missing_key_report_files,
+            "lob_copy_status": self.lob_copy_status,
+            "lob_columns_included": self.lob_columns_included,
+            "lob_columns_excluded_from_checksum": self.lob_columns_excluded_from_checksum,
             "dry_run": self.dry_run,
             "message": self.message,
             "elapsed_seconds": round(self.elapsed_seconds, 3),
@@ -214,8 +249,10 @@ class OracleToPostgresSync:
         full_refresh: bool = False,
     ) -> SyncResult:
         started = time.time()
-        table = split_schema_table(table_name, self.config.postgres.schema)
         table_cfg = self.config.table_config(table_name) or TableConfig(name=table_name)
+        target_schema = table_cfg.target_schema or split_schema_table(table_cfg.name, self.config.postgres.schema).schema
+        target_table = table_cfg.target_table or split_schema_table(table_cfg.name, self.config.postgres.schema).table
+        table = split_schema_table(f"{target_schema}.{target_table}", self.config.postgres.schema)
         mode = (
             mode_override
             or table_cfg.oracle_to_postgres_mode
@@ -228,13 +265,27 @@ class OracleToPostgresSync:
         run_id = run_id or new_run_id()
         result = SyncResult(table.fqname, mode, "PENDING", dry_run=dry_run, run_id=run_id)
         result.safe_mode = mode
+        result.source_schema = table_cfg.source_schema or self.config.oracle.schema
+        result.source_table = table_cfg.source_table or table.table
+        result.target_schema = table.schema
+        result.target_table = table.table
+        self.logger.info(
+            "Resolved %s -> %s.%s to %s.%s mode=%s where=%s",
+            table_name,
+            result.source_schema,
+            result.source_table,
+            result.target_schema,
+            result.target_table,
+            mode,
+            table_cfg.where or "",
+        )
         self.logger.info("Sync %s mode=%s dry_run=%s", table.fqname, mode, dry_run)
 
         try:
             with oracle.connect(self.config.oracle) as ocon, postgres.connect(self.config.postgres) as pcon:
                 with ocon.cursor() as ocur, pcon.cursor() as pcur:
-                    owner = table_cfg.source_schema or self.config.oracle.schema
-                    source_table = table_cfg.source_table or table.table
+                    owner = result.source_schema
+                    source_table = result.source_table
                     oracle_meta = fetch_oracle_metadata(
                         ocur,
                         owner=owner,
@@ -277,7 +328,7 @@ class OracleToPostgresSync:
                         return result
 
                     pg_columns = [pg_col for pg_col, _ in mapping]
-                    swap_size = self._swap_size_estimate(pcur, table.schema, table.table) if mode == "swap" else None
+                    swap_size = self._swap_size_estimate(pcur, table.schema, table.table) if mode in {"swap", "swap_safe"} else None
                     base_where = table_cfg.where
                     incremental_where = self._incremental_where(
                         checkpoint_store,
@@ -287,6 +338,9 @@ class OracleToPostgresSync:
                         full_refresh=full_refresh,
                     )
                     effective_where = _combine_where(base_where, incremental_where)
+                    result.effective_where = effective_where or ""
+                    result.oracle_count_sql_summary = _oracle_count_sql_summary(owner, source_table, effective_where)
+                    result.postgres_count_sql_summary = _postgres_count_sql_summary(table.schema, table.table)
                     if dry_run:
                         result.status = "DRY_RUN"
                         result.message = self._dry_run_message(table.fqname, mode, len(pg_columns), swap_size)
@@ -307,7 +361,24 @@ class OracleToPostgresSync:
                             details={"mode": mode},
                         )
 
-                    if mode == "truncate_safe":
+                    if mode == "truncate":
+                        load_result.metrics = CopyMetrics()
+                        rows_loaded = self._sync_truncate(
+                            ocur,
+                            pcur,
+                            owner,
+                            table.schema,
+                            table.table,
+                            mapping,
+                            effective_where,
+                            metrics=load_result.metrics,
+                            table_name=table.fqname,
+                            key_columns=table_cfg.key_columns,
+                        )
+                        load_result.rows_loaded = rows_loaded
+                        result.validation_stage = "direct_truncate_loaded"
+
+                    elif mode == "truncate_safe":
                         load_result = self._sync_truncate_safe(
                             ocur,
                             pcur,
@@ -373,7 +444,7 @@ class OracleToPostgresSync:
                             staging_schema=load_result.staging_schema,
                             staging_table=load_result.staging_table,
                         )
-                    elif mode == "swap_safe":
+                    elif mode in {"swap", "swap_safe"}:
                         guard_message = self._swap_guard_message(table.fqname, swap_size, force=force)
                         if guard_message:
                             result.status = "SKIPPED"
@@ -385,6 +456,7 @@ class OracleToPostgresSync:
                             pcur,
                             owner,
                             table.schema,
+                            source_table,
                             table.table,
                             mapping,
                             effective_where,
@@ -540,10 +612,36 @@ class OracleToPostgresSync:
                         raise ValueError(f"Unsupported sync mode: {mode}")
 
                     result.rows_loaded = load_result.rows_loaded
+                    self._apply_copy_metrics(result, load_result.metrics)
+                    self._validate_copy_completeness(result)
                     if result.checksum_status == "MISMATCH":
                         raise RuntimeError("checksum mismatch after load")
-                    result.status = "SUCCESS"
-                    if self.config.sync.analyze_after_load and mode in {"truncate_safe", "swap_safe", "incremental_safe"}:
+                    if self._rowcount_validation_enabled(table_cfg):
+                        result.oracle_row_count, result.postgres_row_count, result.row_count_match = self._safe_rowcount_validation(
+                            ocur,
+                            pcur,
+                            owner,
+                            source_table,
+                            table.schema,
+                            table.table,
+                            effective_where,
+                        )
+                        result.row_count_diff = (result.postgres_row_count or 0) - (result.oracle_row_count or 0)
+                        result.validation_status = "validation_pass" if result.row_count_match else "validation_failed"
+                        if result.row_count_match is False:
+                            message = (
+                                f"rowcount mismatch source={result.oracle_row_count} "
+                                f"target={result.postgres_row_count} diff={result.row_count_diff}"
+                            )
+                            if self._rowcount_fail_on_mismatch(table_cfg):
+                                raise RuntimeError(message)
+                            result.status = "WARNING"
+                            result.message = message
+                    else:
+                        result.validation_status = "validation_skipped"
+                    if result.status != "WARNING":
+                        result.status = "SUCCESS"
+                    if self.config.sync.analyze_after_load and mode in {"truncate", "truncate_safe", "swap_safe", "incremental_safe"}:
                         postgres.analyze_table(pcur, table.schema, table.table)
                     result.watermark_candidate = self._build_watermark_candidate(
                         table_cfg,
@@ -565,6 +663,11 @@ class OracleToPostgresSync:
                         )
                     return result
         except Exception as exc:
+            try:
+                if "pcon" in locals():
+                    pcon.rollback()
+            except Exception:
+                pass
             result.status = "FAILED"
             result.message = str(exc)
             result.failed_tables = [table.fqname]
@@ -591,6 +694,10 @@ class OracleToPostgresSync:
         table: str,
         mapping: list[tuple[str, str | None]],
         where: str | None,
+        *,
+        metrics: CopyMetrics | None = None,
+        table_name: str = "",
+        key_columns: list[str] | None = None,
     ) -> int:
         postgres.set_local_timeouts(
             pcur,
@@ -598,7 +705,19 @@ class OracleToPostgresSync:
             statement_timeout=self.config.sync.pg_statement_timeout,
         )
         postgres.truncate_table(pcur, schema, table, cascade=self.config.sync.truncate_cascade)
-        return self._copy_oracle_to_pg(ocur, pcur, owner, schema, table, table, mapping, where)
+        return self._copy_oracle_to_pg(
+            ocur,
+            pcur,
+            owner,
+            schema,
+            table,
+            table,
+            mapping,
+            where,
+            metrics=metrics,
+            table_name=table_name,
+            key_columns=key_columns,
+        )
 
     def _sync_truncate_safe(
         self,
@@ -657,7 +776,8 @@ class OracleToPostgresSync:
         pcur,
         owner: str,
         schema: str,
-        table: str,
+        source_table: str,
+        target_table: str,
         mapping: list[tuple[str, str | None]],
         where: str | None,
         *,
@@ -669,14 +789,14 @@ class OracleToPostgresSync:
             statement_timeout=self.config.sync.pg_statement_timeout,
         )
         metrics = CopyMetrics()
-        staging_schema, staging = create_staging_like(pcur, schema, table, run_id=run_id)
-        self._cleanup_staging_retention(pcur, staging_schema, table)
+        staging_schema, staging = create_staging_like(pcur, schema, target_table, run_id=run_id)
+        self._cleanup_staging_retention(pcur, staging_schema, target_table)
         rows = self._copy_oracle_to_pg(
             ocur,
             pcur,
             owner,
             staging_schema,
-            table,
+            source_table,
             staging,
             mapping,
             where,
@@ -833,6 +953,9 @@ class OracleToPostgresSync:
         where: str | None,
         *,
         metrics: CopyMetrics | None = None,
+        table_name: str = "",
+        chunk_key: str = "",
+        key_columns: list[str] | None = None,
     ) -> int:
         rows_cursor = oracle.select_rows(ocur, owner, source_table, mapping, where=where)
         pg_columns = [pg_col for pg_col, _ in mapping]
@@ -844,6 +967,11 @@ class OracleToPostgresSync:
             rows=rows_cursor,
             lob_chunk_size_bytes=self.config.lob_strategy.lob_chunk_size_bytes,
             metrics=metrics,
+            table_name=table_name or f"{source_schema}.{target_table}",
+            chunk_key=chunk_key,
+            key_columns=key_columns or [],
+            skip_failed_rows=self.config.sync.skip_failed_rows,
+            failed_row_sample_limit=self.config.sync.failed_row_sample_limit,
         )
 
     def _copy_chunks(
@@ -888,6 +1016,9 @@ class OracleToPostgresSync:
                     mapping,
                     _chunk_where(chunk),
                     metrics=metrics,
+                    table_name=chunk.table_name,
+                    chunk_key=chunk.chunk_key,
+                    key_columns=chunk.primary_key and [chunk.primary_key] or [],
                 )
                 total += rows
                 if checkpoint_store:
@@ -1232,14 +1363,19 @@ class OracleToPostgresSync:
 
     def _normalize_mode(self, mode: str, *, incremental: bool) -> str:
         value = str(mode or "").lower()
-        if value in {"truncate_safe", "swap_safe", "incremental_safe", "append"}:
+        if value in {
+            "truncate",
+            "swap",
+            "truncate_safe",
+            "swap_safe",
+            "incremental_safe",
+            "append",
+        }:
             return value
-        if value == "truncate":
-            return "truncate_safe"
-        if value == "swap":
-            return "swap_safe"
+
         if value in {"upsert", "delete"} or incremental:
             return "incremental_safe"
+
         return value or "truncate_safe"
 
     def _register_rollback_action(
@@ -1278,11 +1414,45 @@ class OracleToPostgresSync:
         )
 
     def _finalize_metrics(self, result: SyncResult, metrics: CopyMetrics) -> None:
+        self._apply_copy_metrics(result, metrics)
         result.bytes_processed = int(metrics.bytes_processed or 0)
         result.lob_bytes_processed = int(metrics.lob_bytes_processed or 0)
         if result.elapsed_seconds > 0:
             result.rows_per_second = round(float(result.rows_loaded or 0) / result.elapsed_seconds, 3)
             result.bytes_per_second = round(float(result.bytes_processed or 0) / result.elapsed_seconds, 3)
+
+    @staticmethod
+    def _apply_copy_metrics(result: SyncResult, metrics: CopyMetrics) -> None:
+        result.rows_read_from_oracle = int(getattr(metrics, "rows_read", 0) or 0)
+        result.rows_written_to_postgres = int(getattr(metrics, "rows_written", 0) or getattr(metrics, "rows_copied", 0) or 0)
+        result.rows_failed = int(getattr(metrics, "rows_failed", 0) or 0)
+        result.failed_row_samples = list(getattr(metrics, "failed_row_samples", None) or [])
+        if result.lob_columns_synced:
+            result.lob_copy_status = "included"
+            result.lob_columns_included = result.lob_columns_synced
+        elif result.lob_columns_skipped:
+            result.lob_copy_status = "skipped"
+        elif result.lob_columns_nullified:
+            result.lob_copy_status = "nullified"
+        else:
+            result.lob_copy_status = "none"
+
+    def _validate_copy_completeness(self, result: SyncResult) -> None:
+        if result.rows_failed:
+            raise RuntimeError(f"copy failed rows={result.rows_failed}; samples={result.failed_row_samples}")
+        if result.rows_read_from_oracle != result.rows_written_to_postgres:
+            diff = result.rows_written_to_postgres - result.rows_read_from_oracle
+            raise RuntimeError(
+                "copy row mismatch "
+                f"rows_read_from_oracle={result.rows_read_from_oracle} "
+                f"rows_written_to_postgres={result.rows_written_to_postgres} diff={diff}"
+            )
+
+    def _rowcount_validation_enabled(self, table_cfg: TableConfig) -> bool:
+        return bool(table_cfg.validation.rowcount.enabled and self.config.validation.rowcount.enabled)
+
+    def _rowcount_fail_on_mismatch(self, table_cfg: TableConfig) -> bool:
+        return bool(table_cfg.validation.rowcount.fail_on_mismatch and self.config.validation.rowcount.fail_on_mismatch)
 
     def _safe_rowcount_validation(
         self,
@@ -1329,6 +1499,17 @@ def _combine_where(left: str | None, right: str | None) -> str | None:
 
 def _chunk_where(chunk: Chunk) -> str | None:
     return chunk.where
+
+
+def _oracle_count_sql_summary(owner: str, table: str, where: str | None) -> str:
+    summary = f"SELECT COUNT(1) FROM {owner}.{table}"
+    if where:
+        summary += f" WHERE {where}"
+    return summary
+
+
+def _postgres_count_sql_summary(schema: str, table: str) -> str:
+    return f"SELECT COUNT(1) FROM {schema}.{table}"
 
 
 def _apply_checksum_summary(result: SyncResult, rows: list[dict[str, Any]]) -> None:

@@ -16,6 +16,9 @@ The workbook name is `report.xlsx` and the HTML dashboard is `report.html`.
 - `type_mismatch.csv`: incompatible type-only subset
 - `sync_result.csv`: per-table sync results
 - `validation_checksum.csv`: checksum output when enabled
+- `rowcount_validation.csv`: rowcount-only validation output
+- `keys_in_oracle_not_in_postgres.csv`: missing-key samples from Oracle source
+- `keys_in_postgres_not_in_oracle.csv`: extra-key samples from PostgreSQL target
 - `metrics.json`: per-table throughput, bytes, LOB volume, and slow-table summary
 - `dependency_pre.csv`: dependency graph before sync/repair
 - `dependency_post.csv`: dependency graph after sync/repair
@@ -64,6 +67,26 @@ Top-level run metrics:
 - resume usage
 - LOB-heavy table count
 - slow-table count
+- validation pass/fail counts in `manifest.json`
+
+`sync_success_but_validation_failed` is always reported as zero in the manifest. A table with failed validation is marked `FAILED` before the run can count it as a sync success.
+
+### `03_Rowcount_Compare`
+
+Important columns:
+
+- `source_schema`
+- `source_table`
+- `target_schema`
+- `target_table`
+- `effective_where`
+- `oracle_row_count`
+- `postgres_row_count`
+- `row_count_match`
+- `row_count_diff`
+- `oracle_count_sql_summary`
+- `postgres_count_sql_summary`
+- `validation_status`
 
 ### `05_Column_Diff`
 
@@ -154,6 +177,14 @@ LOB analysis and sync rows show:
 - validation mode
 - recommendation: `exclude`, `partial_columns`, `stream`
 
+Sync rows also include:
+
+- `lob_copy_status`
+- `lob_columns_included`
+- `lob_columns_skipped`
+- `lob_columns_nullified`
+- `lob_columns_excluded_from_checksum`
+
 ## Watermarks And Checkpoints
 
 `10_Watermark` and `11_Checkpoint` are pulled from the SQLite checkpoint store. They are the operational view for resume and incremental state.
@@ -175,3 +206,5 @@ LOB analysis and sync rows show:
 - `metrics_summary`
 - `rollback_summary`
 - `failure_timeline`
+- `validation_summary`
+- `result_rows` with per-table rowcount, copy metrics, source/target mapping, validation status, failed row samples, and missing-key report file names

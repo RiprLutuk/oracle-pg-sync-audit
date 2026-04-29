@@ -6,10 +6,11 @@ from typing import Any
 import psycopg
 from psycopg import sql
 
-from oracle_pg_sync.config import PostgresConfig
+from oracle_pg_sync.config import PostgresConfig, validate_postgres_config
 
 
 def connect(config: PostgresConfig, *, autocommit: bool = False):
+    validate_postgres_config(config)
     return psycopg.connect(**config.conninfo(), autocommit=autocommit)
 
 
@@ -348,15 +349,16 @@ def _heuristic_function_dependency_rows(
     cur.execute(
         """
         SELECT pn.nspname, p.proname, p.prokind::text,
-               pg_get_function_identity_arguments(p.oid),
-               pg_get_functiondef(p.oid)
+            pg_get_function_identity_arguments(p.oid),
+            pg_get_functiondef(p.oid)
         FROM pg_proc p
         JOIN pg_namespace pn ON pn.oid = p.pronamespace
         WHERE pn.nspname NOT IN ('pg_catalog', 'information_schema')
-          AND pg_get_functiondef(p.oid) ILIKE '%' || %s || '%'
+        AND p.prokind IN ('f', 'p')
+        AND pg_get_functiondef(p.oid) ILIKE %s
         ORDER BY pn.nspname, p.proname
         """,
-        (table,),
+        (f"%{table}%",),
     )
     matcher = _table_reference_pattern(schema, table)
     kind_map = {"f": "FUNCTION", "p": "PROCEDURE", "a": "AGGREGATE", "w": "WINDOW"}

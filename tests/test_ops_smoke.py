@@ -108,7 +108,8 @@ tables:
             with redirect_stdout(StringIO()) as output:
                 status = ops_main(["doctor", "--offline", "--config", str(config_path)])
 
-        self.assertEqual(status, 0)
+        self.assertEqual(status, 1)
+        self.assertIn("missing_env_vars,ERROR", output.getvalue())
         self.assertIn("oracle_connection,WARNING,skipped by --offline", output.getvalue())
         self.assertIn("dependency_health,WARNING,skipped by --offline", output.getvalue())
 

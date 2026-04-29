@@ -75,6 +75,8 @@ Important fields:
 - `staging_retention_count`
 - `max_failures`
 - `cooldown_minutes`
+- `skip_failed_rows`: default `false`; keep false so conversion/COPY errors fail the table
+- `failed_row_sample_limit`: maximum row error samples stored in reports
 
 Current checkpoint storage is SQLite and lives under `sync.checkpoint_dir`.
 
@@ -167,6 +169,13 @@ validation:
     batch_size: 5000
     chunk_key: null
     sample_percent: 1
+    exclude_lob_by_default: true
+  rowcount:
+    enabled: true
+    fail_on_mismatch: true
+  missing_keys:
+    enabled: true
+    sample_limit: 1000
 ```
 
 Behavior:
@@ -174,6 +183,8 @@ Behavior:
 - checksum reads rows in batches
 - default `columns: auto` excludes LOB columns
 - output goes to `validation_checksum.csv` and report sheets when enabled
+- rowcount validation runs after successful loads and fails the table on mismatch by default
+- missing-key validation compares configured keys and writes sample CSV files
 
 ### `lob_strategy`
 
@@ -182,6 +193,9 @@ lob_strategy:
   default: error
   stream_batch_size: 100
   lob_chunk_size_bytes: 1048576
+  bytea_format: hex
+  clob_null_byte_policy: remove
+  fail_on_lob_read_error: true
   validation:
     default: size
     hash_algorithm: sha256
@@ -206,6 +220,15 @@ LOB target mapping:
 
 - `BLOB`, `LONG RAW` -> `bytea`
 - `CLOB`, `NCLOB`, `LONG` -> `text`
+
+LOB copy behavior:
+
+- `stream` and `include` copy actual LOB content
+- `skip` removes the LOB column from the load mapping
+- `null` inserts NULL for that column
+- `error` fails when a LOB column is detected
+- BLOB/RAW bytes are COPY-compatible `bytea` hex values
+- CLOB/NCLOB/LONG text preserves content and removes NUL bytes by default
 
 ### `rename_columns`
 
@@ -252,6 +275,16 @@ Supported table config keys:
 - `validation`
 - `lob_strategy`
 
+Manual `--tables` resolution is deterministic:
+
+1. exact configured table `name`
+2. `target_schema.target_table`
+3. `source_schema.source_table`
+4. `target_table`
+5. `source_table`
+
+If multiple configured tables match at the same priority, the command fails and lists the ambiguous mappings. Logs include the resolved Oracle source, PostgreSQL target, mode, and where filter.
+
 ### Incremental Config
 
 ```yaml
@@ -271,6 +304,13 @@ Supported strategies:
 
 ## Safe Mode Semantics
 
+`truncate`
+
+- truncates the live target directly
+- copies Oracle rows into the live target
+- validates rows read, rows written, and final rowcount
+- fails if any row is lost or failed
+
 `truncate_safe`
 
 - loads source rows into `_stg_<table>_<run_id>`
@@ -282,6 +322,11 @@ Supported strategies:
 - builds and validates a replacement table
 - performs atomic rename cutover
 - preserves the previous table as `table__backup_<timestamp>`
+
+`swap`
+
+- uses the swap workflow when enabled by `sync.allow_swap`
+- logs the effective mode as `swap`
 
 `incremental_safe`
 

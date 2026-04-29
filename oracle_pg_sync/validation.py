@@ -13,6 +13,7 @@ UNSUPPORTED_CHECKSUM_TYPES = {
     "BLOB",
     "CLOB",
     "NCLOB",
+    "LONG",
     "LONG RAW",
     "BYTEA",
     "JSON",

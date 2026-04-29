@@ -29,6 +29,13 @@ Review:
 
 Do not start execute mode until the audit is clean or the exceptions are understood.
 
+For a single table such as `A_HP_BATCH`, confirm table resolution and counts before the first load:
+
+```bash
+ops audit --config config.yaml --tables A_HP_BATCH --exact-count
+ops validate --config config.yaml --tables A_HP_BATCH
+```
+
 ## 3. First Oracle -> PostgreSQL Execute
 
 1. Dry-run:
@@ -49,6 +56,18 @@ ops sync --config config.yaml --direction oracle-to-postgres --simulate
 ops sync --config config.yaml --direction oracle-to-postgres --profile daily --go
 ```
 
+Direct truncate is available when you intentionally want the fast destructive path:
+
+```bash
+ops sync --config config.yaml --direction oracle-to-postgres --tables A_HP_BATCH --lob include --mode truncate --go
+```
+
+Use `truncate_safe` instead when staging must be validated before the live target is changed:
+
+```bash
+ops sync --config config.yaml --direction oracle-to-postgres --tables A_HP_BATCH --lob include --mode truncate_safe --go
+```
+
 4. Review:
 
 - `sync_result.csv`
@@ -56,6 +75,15 @@ ops sync --config config.yaml --direction oracle-to-postgres --profile daily --g
 - `validation_checksum.csv` if enabled
 - `metrics.json`
 - `manifest.json`
+
+Confirm these fields for every table:
+
+- `rows_read_from_oracle`
+- `rows_written_to_postgres`
+- `rows_failed`
+- `row_count_match`
+- `row_count_diff`
+- `validation_status`
 
 ## 4. First PostgreSQL -> Oracle Execute
 
@@ -157,6 +185,31 @@ ops dependencies repair --config config.yaml
 ### Checksum Failure
 
 Treat checksum mismatch as a hard validation failure. Do not mark the run successful until source/target row selection, keying, and LOB policy are verified.
+
+By default checksum excludes `BLOB`, `CLOB`, `NCLOB`, `LONG`, `LONG RAW`, and `bytea` columns. Validate LOBs separately by size or explicit hash when needed.
+
+### Rowcount Mismatch
+
+A rowcount mismatch makes the table fail when `validation.rowcount.fail_on_mismatch: true`. No watermark is updated for failed runs.
+
+1. Check `source_schema`, `source_table`, `target_schema`, `target_table`, and `effective_where` in `sync_result.csv`.
+2. Re-run exact validation:
+
+```bash
+ops validate --config config.yaml --tables A_HP_BATCH
+```
+
+3. If keys are configured, produce missing/extra samples:
+
+```bash
+ops validate missing-keys --config config.yaml --tables A_HP_BATCH
+```
+
+Review `keys_in_oracle_not_in_postgres.csv` and `keys_in_postgres_not_in_oracle.csv`.
+
+### LOB Load Failure
+
+With `--lob include` or `--lob stream`, LOB read/conversion errors fail the table. Review `failed_row_samples` for table name, chunk key, row number, configured key values, column name, and error message. Do not set `sync.skip_failed_rows: true` unless DBA sign-off accepts partial loads.
 
 ## 8. Rollback Strategy
 

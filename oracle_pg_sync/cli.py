@@ -16,7 +16,7 @@ from typing import Any
 
 from oracle_pg_sync.alerting import send_alert
 from oracle_pg_sync.checkpoint import CheckpointStore, new_run_id
-from oracle_pg_sync.config import AppConfig, TableConfig, load_config
+from oracle_pg_sync.config import AppConfig, TableConfig, load_config, load_environment
 from oracle_pg_sync.dependency_health import critical_dependency_rows, summarize_dependency_rows
 from oracle_pg_sync.manifest import RunManifest
 from oracle_pg_sync.manifest import sanitize
@@ -27,6 +27,7 @@ from oracle_pg_sync.utils.naming import split_schema_table
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="oracle-pg-sync-audit")
     parser.add_argument("--config", default="config.yaml", help="Path config YAML/JSON")
+    parser.add_argument("--env-file", help="Path dotenv file. Defaults to .env when present")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
 
     sub = parser.add_subparsers(dest="command", required=True)
@@ -72,7 +73,17 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--lob", choices=["error", "skip", "null", "stream", "include"], help="Override default LOB strategy")
     sync.add_argument("--force", action="store_true", help="Tetap sync walaupun struktur mismatch")
     sync.add_argument("--simulate", action="store_true", help="Risk simulation only; no data changes")
+    sync.add_argument("--no-rowcount-validation", action="store_true", help="Disable post-load rowcount validation")
+    sync.add_argument("--rowcount-only", action="store_true", help="Only validate rowcounts; do not load data")
     _add_production_sync_args(sync)
+
+    validate = sub.add_parser("validate", help="Validate rowcount/checksum/missing keys")
+    _add_common_args(validate)
+    validate.add_argument("validate_action", nargs="?", choices=["missing-keys"], help="Validation action")
+    validate.add_argument("--tables", nargs="*", help="Override table list")
+    validate.add_argument("--tables-file", help="Read table list from YAML/JSON file")
+    validate.add_argument("--direction", choices=["oracle-to-postgres", "postgres-to-oracle"], help="Validation direction")
+    validate.add_argument("--missing-keys", action="store_true", help="Compare configured keys and write missing-key CSVs")
 
     report = sub.add_parser("report", help="Generate report.html dari CSV latest run")
     _add_common_args(report)
@@ -126,6 +137,8 @@ def build_parser() -> argparse.ArgumentParser:
     all_cmd.add_argument("--lob", choices=["error", "skip", "null", "stream", "include"], help="Override default LOB strategy")
     all_cmd.add_argument("--force", action="store_true", help="Tetap sync walaupun struktur mismatch")
     all_cmd.add_argument("--simulate", action="store_true", help="Risk simulation only; no data changes")
+    all_cmd.add_argument("--no-rowcount-validation", action="store_true", help="Disable post-load rowcount validation")
+    all_cmd.add_argument("--rowcount-only", action="store_true", help="Only validate rowcounts; do not load data")
     _add_production_sync_args(all_cmd)
     all_cmd.add_argument("--fast-count", action="store_true", help="Use statistic count")
     all_cmd.add_argument("--exact-count", action="store_true", help="Use SELECT COUNT(1)")
@@ -138,6 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", default=argparse.SUPPRESS, help="Path config YAML/JSON")
+    parser.add_argument("--env-file", default=argparse.SUPPRESS, help="Path dotenv file. Defaults to .env when present")
     parser.add_argument("--verbose", action="store_true", default=argparse.SUPPRESS, help="Enable debug logging")
 
 
@@ -170,15 +184,20 @@ def _add_incremental_override_args(parser: argparse.ArgumentParser) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _apply_profile(args)
-    config = load_config(args.config)
-    if args.command in {"audit", "sync", "all", "audit-objects", "dependencies"}:
+    load_environment(getattr(args, "env_file", None), config_path=Path(args.config))
+    config = load_config(args.config, env_file=getattr(args, "env_file", None))
+    if args.command in {"audit", "sync", "all", "audit-objects", "dependencies", "validate"}:
         _ensure_oracle_client_library_path(config, argv)
     report_dir = Path(config.reports.output_dir)
     _rotate_log(report_dir / "sync.log", max_bytes=int(getattr(args, "log_rotate_bytes", 10 * 1024 * 1024) or 0))
     logger = setup_logging(report_dir, logging.DEBUG if args.verbose else logging.INFO)
+    _log_resolved_db_config(logger, config)
     _maybe_acquire_lock(args, logger)
-    direction = _resolve_direction(config, getattr(args, "direction", None)) if args.command in {"sync", "all"} else None
+    direction = _resolve_direction(config, getattr(args, "direction", None)) if args.command in {"sync", "all", "validate"} else None
     checkpoint_store = CheckpointStore(config.sync.checkpoint_dir)
+
+    if getattr(args, "no_rowcount_validation", False):
+        config.validation.rowcount.enabled = False
 
     if args.command in {"sync", "all"}:
         if getattr(args, "list_runs", False):
@@ -293,6 +312,49 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Audit selesai. Report ada di %s", report_dir)
         return 0
 
+    if args.command == "validate":
+        from oracle_pg_sync.reports.writer_csv import write_csv
+
+        run_id = new_run_id()
+        manifest = RunManifest(
+            report_dir=report_dir,
+            run_id=run_id,
+            command="validate",
+            config_file=args.config,
+            config=config,
+            direction=direction,
+            dry_run=True,
+            tables_requested=tables,
+            checkpoint_path=str(checkpoint_store.path),
+        )
+        run_dir = manifest.run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if args.validate_action == "missing-keys" or args.missing_keys:
+            rows = validate_missing_keys(config, tables, logger, direction=direction or "oracle-to-postgres", report_dir=run_dir)
+            write_csv(run_dir / "missing_keys_summary.csv", rows)
+            _copy_log_to_run_dir(report_dir, run_dir)
+            manifest_path = manifest.finish(
+                result_rows=rows,
+                report_files=_run_report_files(
+                    run_dir,
+                    "missing_keys_summary.csv",
+                    "keys_in_oracle_not_in_postgres.csv",
+                    "keys_in_postgres_not_in_oracle.csv",
+                    "logs.txt",
+                ),
+            )
+            logger.info("Manifest dibuat: %s", manifest_path)
+            return 1 if any(row.get("status") == "MISMATCH" for row in rows) else 0
+        rows = validate_rowcounts(config, tables, logger, direction=direction or "oracle-to-postgres")
+        write_csv(run_dir / "rowcount_validation.csv", rows)
+        _copy_log_to_run_dir(report_dir, run_dir)
+        manifest_path = manifest.finish(
+            result_rows=rows,
+            report_files=_run_report_files(run_dir, "rowcount_validation.csv", "logs.txt"),
+        )
+        logger.info("Manifest dibuat: %s", manifest_path)
+        return 1 if any(row.get("status") == "MISMATCH" for row in rows) else 0
+
     if args.command == "sync":
         from oracle_pg_sync.reports.writer_csv import write_csv
         from oracle_pg_sync.reports.writer_excel import write_central_report_xlsx, write_rows_xlsx
@@ -313,6 +375,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         run_dir = manifest.run_dir
         run_dir.mkdir(parents=True, exist_ok=True)
+        if getattr(args, "rowcount_only", False):
+            rows = validate_rowcounts(config, tables, logger, direction=direction or "oracle-to-postgres")
+            write_csv(run_dir / "rowcount_validation.csv", rows)
+            _copy_log_to_run_dir(report_dir, run_dir)
+            manifest_path = manifest.finish(
+                result_rows=rows,
+                report_files=_run_report_files(run_dir, "rowcount_validation.csv", "logs.txt"),
+            )
+            logger.info("Manifest dibuat: %s", manifest_path)
+            return 1 if any(row.get("status") == "MISMATCH" for row in rows) else 0
         dependency_pre_rows = _write_dependency_report(config, tables, logger, run_dir, phase="pre")
         results = _sync_runner(config, logger, direction).sync_tables(
             tables,
@@ -746,6 +818,126 @@ def run_audit(config: AppConfig, tables: list[str], logger: logging.Logger, *, w
     return AuditResult(inventory_rows, column_diff_rows, type_mismatch_rows, dependency_rows)
 
 
+def validate_rowcounts(config: AppConfig, tables: list[str], logger: logging.Logger, *, direction: str) -> list[dict]:
+    from oracle_pg_sync.db import oracle, postgres
+
+    if direction != "oracle-to-postgres":
+        raise SystemExit("rowcount validation currently supports oracle-to-postgres")
+    rows: list[dict] = []
+    with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+        with ocon.cursor() as ocur, pcon.cursor() as pcur:
+            for table_name in tables:
+                table_cfg = config.table_config(table_name) or TableConfig(name=table_name)
+                target = split_schema_table(table_cfg.name, config.postgres.schema)
+                target_schema = table_cfg.target_schema or target.schema
+                target_table = table_cfg.target_table or target.table
+                source_schema = table_cfg.source_schema or config.oracle.schema
+                source_table = table_cfg.source_table or target_table
+                source_count = oracle.count_rows_where(ocur, source_schema, source_table, table_cfg.where)
+                target_count = postgres.count_rows_where(pcur, target_schema, target_table)
+                diff = target_count - source_count
+                logger.info("Rowcount %s -> %s.%s to %s.%s diff=%s", table_name, source_schema, source_table, target_schema, target_table, diff)
+                rows.append(
+                    {
+                        "table_name": f"{target_schema}.{target_table}",
+                        "direction": direction,
+                        "source_schema": source_schema,
+                        "source_table": source_table,
+                        "target_schema": target_schema,
+                        "target_table": target_table,
+                        "effective_where": table_cfg.where or "",
+                        "oracle_row_count": source_count,
+                        "postgres_row_count": target_count,
+                        "row_count_match": source_count == target_count,
+                        "row_count_diff": diff,
+                        "status": "MATCH" if source_count == target_count else "MISMATCH",
+                        "oracle_count_sql_summary": _oracle_count_sql_summary(source_schema, source_table, table_cfg.where),
+                        "postgres_count_sql_summary": _postgres_count_sql_summary(target_schema, target_table),
+                    }
+                )
+    return rows
+
+
+def validate_missing_keys(
+    config: AppConfig,
+    tables: list[str],
+    logger: logging.Logger,
+    *,
+    direction: str,
+    report_dir: Path,
+) -> list[dict]:
+    from oracle_pg_sync.db import oracle, postgres
+    from oracle_pg_sync.reports.writer_csv import write_csv
+
+    if direction != "oracle-to-postgres":
+        raise SystemExit("missing key validation currently supports oracle-to-postgres")
+    summary: list[dict] = []
+    oracle_missing_rows: list[dict] = []
+    postgres_missing_rows: list[dict] = []
+    sample_limit = max(1, int(config.validation.missing_keys.sample_limit or 1000))
+    with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+        with ocon.cursor() as ocur, pcon.cursor() as pcur:
+            for table_name in tables:
+                table_cfg = config.table_config(table_name) or TableConfig(name=table_name)
+                keys = table_cfg.key_columns or table_cfg.primary_key
+                if not keys:
+                    raise SystemExit("missing key comparison requires key_columns or primary_key")
+                target = split_schema_table(table_cfg.name, config.postgres.schema)
+                target_schema = table_cfg.target_schema or target.schema
+                target_table = table_cfg.target_table or target.table
+                source_schema = table_cfg.source_schema or config.oracle.schema
+                source_table = table_cfg.source_table or target_table
+                oracle_cursor = oracle.select_rows(
+                    ocur,
+                    source_schema,
+                    source_table,
+                    [(key.lower(), key.upper()) for key in keys],
+                    where=table_cfg.where,
+                )
+                postgres_cursor = postgres.select_rows(pcur, target_schema, target_table, [key.lower() for key in keys])
+                source_keys = {_key_tuple(row) for row in oracle_cursor.fetchmany(sample_limit + 1)}
+                target_keys = {_key_tuple(row) for row in postgres_cursor.fetchmany(sample_limit + 1)}
+                in_oracle_not_pg = sorted(source_keys - target_keys)[:sample_limit]
+                in_pg_not_oracle = sorted(target_keys - source_keys)[:sample_limit]
+                for key in in_oracle_not_pg:
+                    oracle_missing_rows.append(_missing_key_row(target_schema, target_table, keys, key))
+                for key in in_pg_not_oracle:
+                    postgres_missing_rows.append(_missing_key_row(target_schema, target_table, keys, key))
+                status = "MATCH" if not in_oracle_not_pg and not in_pg_not_oracle else "MISMATCH"
+                logger.info(
+                    "Missing keys %s -> oracle_not_pg=%s pg_not_oracle=%s",
+                    table_name,
+                    len(in_oracle_not_pg),
+                    len(in_pg_not_oracle),
+                )
+                summary.append(
+                    {
+                        "table_name": f"{target_schema}.{target_table}",
+                        "direction": direction,
+                        "key_columns": ";".join(keys),
+                        "sample_limit": sample_limit,
+                        "oracle_not_postgres_sample": len(in_oracle_not_pg),
+                        "postgres_not_oracle_sample": len(in_pg_not_oracle),
+                        "status": status,
+                        "missing_key_report_files": "keys_in_oracle_not_in_postgres.csv;keys_in_postgres_not_in_oracle.csv",
+                    }
+                )
+    write_csv(report_dir / "keys_in_oracle_not_in_postgres.csv", oracle_missing_rows)
+    write_csv(report_dir / "keys_in_postgres_not_in_oracle.csv", postgres_missing_rows)
+    return summary
+
+
+def _key_tuple(row: Any) -> tuple[Any, ...]:
+    return tuple(row)
+
+
+def _missing_key_row(schema: str, table: str, keys: list[str], values: tuple[Any, ...]) -> dict[str, Any]:
+    row = {"table_name": f"{schema}.{table}"}
+    for idx, key in enumerate(keys):
+        row[str(key)] = values[idx] if idx < len(values) else ""
+    return row
+
+
 def run_object_audit(
     config: AppConfig,
     logger: logging.Logger,
@@ -779,10 +971,15 @@ def run_table_dependency_audit(config: AppConfig, tables: list[str], logger: log
     with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
         with ocon.cursor() as ocur, pcon.cursor() as pcur:
             for table_name in tables:
-                table = split_schema_table(table_name, config.postgres.schema)
-                logger.info("Dependency audit %s", table.fqname)
-                rows.extend(oracle.table_object_dependency_rows(ocur, config.oracle.schema, table.table))
-                rows.extend(postgres.table_object_dependency_rows(pcur, table.schema, table.table))
+                table_cfg = config.table_config(table_name) or TableConfig(name=table_name)
+                target = split_schema_table(table_cfg.name, config.postgres.schema)
+                target_schema = table_cfg.target_schema or target.schema
+                target_table = table_cfg.target_table or target.table
+                source_schema = table_cfg.source_schema or config.oracle.schema
+                source_table = table_cfg.source_table or target_table
+                logger.info("Dependency audit resolved %s -> %s.%s to %s.%s", table_name, source_schema, source_table, target_schema, target_table)
+                rows.extend(oracle.table_object_dependency_rows(ocur, source_schema, source_table))
+                rows.extend(postgres.table_object_dependency_rows(pcur, target_schema, target_table))
     return rows
 
 
@@ -804,30 +1001,62 @@ def _audit_table(config: AppConfig, table_name: str, ocur, pcur, logger: logging
     from oracle_pg_sync.metadata.oracle_metadata import fetch_table_metadata as fetch_oracle_metadata
     from oracle_pg_sync.metadata.postgres_metadata import fetch_table_metadata as fetch_pg_metadata
 
-    owner = config.oracle.schema
-    table = split_schema_table(table_name, config.postgres.schema)
-    logger.info("Audit %s", table.fqname)
+    table_cfg = config.table_config(table_name) or TableConfig(name=table_name)
+    target = split_schema_table(table_cfg.name, config.postgres.schema)
+    target_schema = table_cfg.target_schema or target.schema
+    target_table = table_cfg.target_table or target.table
+    source_schema = table_cfg.source_schema or config.oracle.schema
+    source_table = table_cfg.source_table or target_table
+    effective_where = table_cfg.where
+    table = split_schema_table(f"{target_schema}.{target_table}", config.postgres.schema)
+    logger.info(
+        "Audit resolved %s -> %s.%s to %s.%s where=%s",
+        table_name,
+        source_schema,
+        source_table,
+        target_schema,
+        target_table,
+        effective_where or "",
+    )
     try:
         oracle_meta = fetch_oracle_metadata(
             ocur,
-            owner=owner,
-            table=table.table,
+            owner=source_schema,
+            table=source_table,
             fast_count=config.sync.fast_count,
         )
+        if oracle_meta.exists:
+            oracle_meta.row_count = oracle.count_rows_where(ocur, source_schema, source_table, effective_where)
         pg_meta = fetch_pg_metadata(
             pcur,
-            schema=table.schema,
-            table=table.table,
+            schema=target_schema,
+            table=target_table,
             fast_count=config.sync.fast_count,
         )
+        if pg_meta.exists:
+            pg_meta.row_count = postgres.count_rows_where(pcur, target_schema, target_table)
         inventory, diffs, mismatches = compare_table_metadata(
             table_name=table.fqname,
             config=config,
             oracle_meta=oracle_meta,
             postgres_meta=pg_meta,
         )
-        dependencies = oracle.dependency_rows(ocur, owner, [table.table])
-        dependencies.extend(postgres.dependency_rows(pcur, table.schema, table.table))
+        inventory.update(
+            {
+                "source_schema": source_schema,
+                "source_table": source_table,
+                "target_schema": target_schema,
+                "target_table": target_table,
+                "effective_where": effective_where or "",
+                "direction": "oracle-to-postgres",
+                "oracle_count_sql_summary": _oracle_count_sql_summary(source_schema, source_table, effective_where),
+                "postgres_count_sql_summary": _postgres_count_sql_summary(target_schema, target_table),
+            }
+        )
+        if inventory.get("oracle_row_count") not in (None, "") and inventory.get("postgres_row_count") not in (None, ""):
+            inventory["row_count_diff"] = int(inventory["postgres_row_count"]) - int(inventory["oracle_row_count"])
+        dependencies = oracle.dependency_rows(ocur, source_schema, [source_table])
+        dependencies.extend(postgres.dependency_rows(pcur, target_schema, target_table))
         return inventory, diffs, mismatches, dependencies
     except Exception as exc:
         logger.exception("Audit failed for %s", table.fqname)
@@ -870,7 +1099,7 @@ def _resolve_tables(
     if limit is not None and limit < 1:
         raise SystemExit("--limit must be greater than 0")
     if override:
-        return _apply_limit(override, limit)
+        return _apply_limit([config.resolve_table_name(table, strict=False) for table in override], limit)
     if tables_file:
         return _apply_limit(_read_table_names_file(Path(tables_file), direction=direction), limit)
     if direction:
@@ -1003,6 +1232,35 @@ def _resolve_direction(config: AppConfig, override: str | None) -> str:
     if direction not in {"oracle-to-postgres", "postgres-to-oracle"}:
         raise SystemExit(f"Unsupported sync direction: {direction}")
     return direction
+
+
+def _log_resolved_db_config(logger: logging.Logger, config: AppConfig) -> None:
+    logger.debug(
+        "Using PostgreSQL config: host=%s port=%s database=%s user=%s password=%s",
+        config.postgres.host or "",
+        config.postgres.port or "",
+        config.postgres.database or "",
+        config.postgres.user or "",
+        "****" if config.postgres.password else "",
+    )
+    logger.debug(
+        "Using Oracle config: host=%s dsn=%s user=%s password=%s",
+        config.oracle.host or "",
+        config.oracle.dsn or "",
+        config.oracle.user or "",
+        "****" if config.oracle.password else "",
+    )
+
+
+def _oracle_count_sql_summary(owner: str, table: str, where: str | None) -> str:
+    query = f"SELECT COUNT(1) FROM {owner}.{table}"
+    if where:
+        query += f" WHERE {where}"
+    return query
+
+
+def _postgres_count_sql_summary(schema: str, table: str) -> str:
+    return f"SELECT COUNT(1) FROM {schema}.{table}"
 
 
 def _sync_runner(config: AppConfig, logger: logging.Logger, direction: str):

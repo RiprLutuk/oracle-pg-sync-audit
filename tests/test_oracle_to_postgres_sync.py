@@ -83,7 +83,7 @@ class OracleToPostgresSyncTest(unittest.TestCase):
 
         self.assertEqual(successful, set())
 
-    def test_legacy_modes_normalize_to_safe_modes(self):
+    def test_modes_preserve_requested_safety_level(self):
         sync = OracleToPostgresSync(
             AppConfig(
                 oracle=OracleConfig(schema="APP"),
@@ -91,9 +91,23 @@ class OracleToPostgresSyncTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(sync._normalize_mode("truncate", incremental=False), "truncate_safe")
-        self.assertEqual(sync._normalize_mode("swap", incremental=False), "swap_safe")
+        self.assertEqual(sync._normalize_mode("truncate", incremental=False), "truncate")
+        self.assertEqual(sync._normalize_mode("truncate_safe", incremental=False), "truncate_safe")
+        self.assertEqual(sync._normalize_mode("swap", incremental=False), "swap")
+        self.assertEqual(sync._normalize_mode("swap_safe", incremental=False), "swap_safe")
         self.assertEqual(sync._normalize_mode("upsert", incremental=False), "incremental_safe")
+
+    def test_copy_mismatch_fails_completeness_validation(self):
+        sync = OracleToPostgresSync(
+            AppConfig(
+                oracle=OracleConfig(schema="APP"),
+                postgres=PostgresConfig(schema="public"),
+            )
+        )
+        result = types.SimpleNamespace(rows_failed=0, rows_read_from_oracle=10, rows_written_to_postgres=9)
+
+        with self.assertRaises(RuntimeError):
+            sync._validate_copy_completeness(result)
 
 
 if __name__ == "__main__":

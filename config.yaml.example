@@ -1,14 +1,14 @@
 env_file: .env
 oracle:
-  dsn: ${ORACLE_DSN}
+  dsn: ${ORACLE_DSN:-}
   host: ${ORACLE_HOST}
-  port: ${ORACLE_PORT}
-  service_name: ${ORACLE_SERVICE_NAME}
-  sid: ${ORACLE_SID}
+  port: ${ORACLE_PORT:-1521}
+  service_name: ${ORACLE_SERVICE_NAME:-}
+  sid: ${ORACLE_SID:-}
   user: ${ORACLE_USER}
   password: ${ORACLE_PASSWORD}
-  schema: ${ORACLE_SCHEMA}
-  client_lib_dir: ${ORACLE_CLIENT_LIB_DIR}
+  schema: ${ORACLE_SCHEMA:-}
+  client_lib_dir: ${ORACLE_CLIENT_LIB_DIR:-}
 postgres:
   host: ${PG_HOST}
   port: ${PG_PORT}
@@ -44,6 +44,8 @@ sync:
   staging_retention_count: 5
   max_failures: 3
   cooldown_minutes: 30
+  skip_failed_rows: false
+  failed_row_sample_limit: 20
 reports:
   output_dir: reports
 dependency:
@@ -74,10 +76,20 @@ validation:
     columns: auto
     exclude_columns: []
     sample_percent: 1
+    exclude_lob_by_default: true
+  rowcount:
+    enabled: true
+    fail_on_mismatch: true
+  missing_keys:
+    enabled: true
+    sample_limit: 1000
 lob_strategy:
   default: error
   stream_batch_size: 100
   lob_chunk_size_bytes: 1048576
+  bytea_format: hex
+  clob_null_byte_policy: remove
+  fail_on_lob_read_error: true
   validation:
     default: size
     hash_algorithm: sha256

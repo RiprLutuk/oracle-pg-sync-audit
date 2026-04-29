@@ -39,6 +39,48 @@ cp config.yaml.example config.yaml
 
 Put secrets only in `.env`. Do not commit `.env`, `config.yaml`, or real table lists.
 
+## Environment Configuration
+
+`.env` is loaded automatically for every `ops` and `oracle-pg-sync-audit` command. You do not need to manually `export` variables before running the tool.
+
+Use a custom environment file when switching environments:
+
+```bash
+ops --env-file .env.prod doctor --config config.yaml
+ops --env-file .env.dev sync --config config.yaml --direction oracle-to-postgres --tables A_HP_BATCH
+oracle-pg-sync-audit --env-file .env.prod audit --config config.yaml
+```
+
+Already exported variables are not overwritten by `.env`; shell exports take priority.
+
+Required variables before database connections:
+
+- `ORACLE_HOST`
+- `ORACLE_USER`
+- `ORACLE_PASSWORD`
+- `PG_HOST`
+- `PG_PORT`
+- `PG_DATABASE`
+- `PG_USER`
+- `PG_PASSWORD`
+
+If a config placeholder such as `${PG_HOST}` cannot be resolved, the command fails before any DB connection attempt:
+
+```text
+Environment variable PG_HOST is not set. Check .env or export it.
+```
+
+Troubleshooting:
+
+```bash
+echo $PG_HOST
+cat .env
+ops doctor --config config.yaml
+ops --env-file .env.prod doctor --config config.yaml
+```
+
+Keep `.env` lines in `KEY=value` format with no spaces around `=`.
+
 Minimal connection variables:
 
 ```dotenv
@@ -105,7 +147,9 @@ oracle-pg-sync-audit audit-objects --config config.yaml
 
 Production-safe modes:
 
+- `truncate`: directly truncate the live PostgreSQL table, then COPY source rows into it. Fast, direct, and destructive if the load fails.
 - `truncate_safe`: load to `_stg_<table>_<run_id>`, validate rowcount + checksum, then truncate and refill from staging
+- `swap`: build a replacement table and swap it when allowed by `sync.allow_swap`
 - `swap_safe`: load and validate a new table, atomically rename, keep `table__backup_<timestamp>` for rollback
 - `incremental_safe`: load changed rows to staging, validate them, back up target, then apply staged upsert
 
@@ -120,6 +164,14 @@ Execute the load:
 ```bash
 ops sync --config config.yaml --direction oracle-to-postgres --tables public.address --go
 ```
+
+Direct truncate with LOB content:
+
+```bash
+ops sync --config config.yaml --direction oracle-to-postgres --tables A_HP_BATCH --lob include --mode truncate --go
+```
+
+`--mode truncate` now stays direct truncate. Use `--mode truncate_safe` when you want staging validation before the live target is truncated.
 
 Run all configured Oracle -> PostgreSQL tables:
 
@@ -232,6 +284,10 @@ LOB strategies:
 - `stream`
 - `include` (normalized internally to `stream`)
 
+With `--lob include` or `--lob stream`, Oracle LOB objects are read with `read()`. BLOB-like values are sent to PostgreSQL `bytea` in hex format, and CLOB/NCLOB/LONG text has embedded NUL bytes removed. LOB read errors fail the table instead of silently dropping rows.
+
+Checksum excludes LOB columns by default because Oracle BLOB/CLOB and PostgreSQL bytea/text can have different binary representations even when the application value is correct. Use separate LOB validation by size or hash when you need LOB-specific proof.
+
 Analyze LOB-heavy tables:
 
 ```bash
@@ -322,6 +378,29 @@ reports/run_<timestamp>_<run_id>/
 ```
 
 The standard workbook is `report.xlsx` and the standard dashboard is `report.html`.
+
+## Rowcount And Key Validation
+
+Every successful Oracle -> PostgreSQL load validates rowcount by default:
+
+- Oracle count uses the resolved `source_schema`, `source_table`, and `effective_where`
+- PostgreSQL count uses the resolved `target_schema` and `target_table`
+- safe modes validate staging before cutover
+- a mismatch fails the table when `validation.rowcount.fail_on_mismatch: true`
+
+Useful commands:
+
+```bash
+ops audit --config config.yaml --tables A_HP_BATCH
+ops sync --config config.yaml --direction oracle-to-postgres --tables A_HP_BATCH --rowcount-only
+ops validate --config config.yaml --tables A_HP_BATCH --missing-keys
+ops validate missing-keys --config config.yaml --tables A_HP_BATCH
+```
+
+Missing-key validation requires `key_columns` or `primary_key` in the table config and writes:
+
+- `keys_in_oracle_not_in_postgres.csv`
+- `keys_in_postgres_not_in_oracle.csv`
 
 ## Cron Jobs
 

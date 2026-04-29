@@ -169,8 +169,20 @@ class LobStrategyTest(unittest.TestCase):
 
         blob = FakeBlob()
 
-        self.assertEqual(_sanitize_value(blob, lob_chunk_size_bytes=2), b"abcdef")
+        self.assertEqual(_sanitize_value(blob, lob_chunk_size_bytes=2), "\\x616263646566")
         self.assertEqual(blob.calls, [(1, 2), (3, 2), (5, 2), (7, 2)])
+
+    def test_binary_values_are_copy_compatible_bytea_hex(self):
+        self.assertEqual(_sanitize_value(b"\x00\xff"), "\\x00ff")
+        self.assertEqual(_sanitize_value(bytearray(b"abc")), "\\x616263")
+        self.assertEqual(_sanitize_value(memoryview(b"abc")), "\\x616263")
+
+    def test_clob_reader_removes_null_bytes(self):
+        class FakeClob:
+            def read(self):
+                return "a\x00b"
+
+        self.assertEqual(_sanitize_value(FakeClob()), "ab")
 
 
 if __name__ == "__main__":

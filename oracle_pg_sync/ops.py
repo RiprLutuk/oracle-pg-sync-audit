@@ -7,11 +7,13 @@ from pathlib import Path
 
 from oracle_pg_sync.checkpoint import CheckpointStore
 from oracle_pg_sync.cli import main as cli_main
-from oracle_pg_sync.config import load_config
+from oracle_pg_sync.config import env_status, load_config, load_environment, missing_required_env_vars
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    global_args, args = _extract_leading_global_args(args)
+    load_environment(_env_file_arg(global_args))
     if not args:
         _print_usage()
         return 2
@@ -20,9 +22,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     command = args[0]
-    rest = args[1:]
+    command_args = args[1:]
+    rest = [*command_args, *global_args]
     if command in {"audit", "sync"}:
-        return cli_main([command, *rest])
+        return cli_main([*global_args, command, *command_args])
     if command == "rollback":
         return _rollback(rest)
     if command == "doctor":
@@ -32,29 +35,27 @@ def main(argv: list[str] | None = None) -> int:
     if command == "analyze":
         return _analyze(rest)
     if command == "report":
-        if rest and rest[0] == "latest":
-            _print_latest_report(rest[1:])
+        if command_args and command_args[0] == "latest":
+            _print_latest_report([*command_args[1:], *global_args])
             return 0
-        if rest and not rest[0].startswith("-"):
-            rest = rest[1:]
-        return cli_main(["report", *rest])
+        return cli_main([*global_args, "report", *command_args])
     if command == "validate":
         rest = _expand_bare_lob_flag(rest)
-        return cli_main(["sync", *rest])
+        return cli_main([*global_args, "validate", *command_args])
     if command == "resume":
         run_id = rest[0] if rest and not rest[0].startswith("-") else _latest_failed_run_id(rest)
         tail = rest[1:] if rest and not rest[0].startswith("-") else rest
         if not run_id:
             print("No failed run found to resume.")
             return 1
-        return cli_main(["sync", "--resume", run_id, *tail])
+        return cli_main([*global_args, "sync", "--resume", run_id, *tail])
     if command == "watermarks":
-        return cli_main(["sync", "--watermark-status", *rest])
+        return cli_main([*global_args, "sync", "--watermark-status", *command_args])
     if command == "reset-watermark":
         if not rest or rest[0].startswith("-"):
             print("Usage: ops reset-watermark TABLE [--config config.yaml]")
             return 2
-        return cli_main(["sync", "--reset-watermark", rest[0], *rest[1:]])
+        return cli_main([*global_args, "sync", "--reset-watermark", rest[0], *rest[1:]])
     if command == "status":
         _print_status(rest)
         return 0
@@ -66,6 +67,7 @@ def _print_usage() -> None:
     print("Usage: ops audit|sync|rollback|resume|status|watermarks|reset-watermark|validate|report|doctor ...")
     print("")
     print("Common:")
+    print("  ops --env-file .env.prod doctor --config config.yaml")
     print("  ops audit --config config.yaml")
     print("  ops sync --config config.yaml")
     print("  ops sync --simulate --config config.yaml")
@@ -84,11 +86,21 @@ def _doctor(args: list[str]) -> int:
     rows: list[tuple[str, str, str]] = []
     critical = False
     try:
-        config = load_config(_config_path(args))
+        config = _load_config(args)
         rows.append(("config", "OK", "config loaded"))
     except Exception as exc:
         _print_check_rows([("config", "ERROR", str(exc))])
         return 1
+
+    loaded, env_path = env_status()
+    missing_env = missing_required_env_vars(config)
+    rows.append(("env_loaded", "OK" if loaded or not missing_env else "ERROR", f"{env_path} loaded" if loaded else "no .env loaded"))
+    rows.append(("missing_env_vars", "OK" if not missing_env else "ERROR", "none" if not missing_env else ";".join(missing_env)))
+    rows.append(("resolved_pg_host", "OK" if config.postgres.host else "ERROR", str(config.postgres.host or "")))
+    rows.append(("resolved_oracle_host", "OK" if config.oracle.host or config.oracle.dsn else "ERROR", str(config.oracle.host or config.oracle.dsn or "")))
+    rows.append(("pg_host", "OK" if config.postgres.host else "ERROR", str(config.postgres.host or "")))
+    rows.append(("pg_user", "OK" if config.postgres.user else "ERROR", str(config.postgres.user or "")))
+    critical = critical or bool(missing_env)
 
     offline = "--offline" in args
     table_source = f"tables_file={config.tables_file}" if config.tables_file else "inline tables"
@@ -121,7 +133,7 @@ def _rollback(args: list[str]) -> int:
         print("Usage: ops rollback RUN_ID [--config config.yaml]")
         return 2
     run_id = args[0]
-    config = load_config(_config_path(args[1:]))
+    config = _load_config(args[1:])
     logger = setup_logging(Path(config.reports.output_dir))
     checkpoint_store = CheckpointStore(config.sync.checkpoint_dir)
     rows = rollback_run(config, checkpoint_store, run_id=run_id, logger=logger)
@@ -174,7 +186,7 @@ def _repair_dependencies(args: list[str]) -> int:
     from oracle_pg_sync.reports.writer_html import write_html_report
     from oracle_pg_sync.utils.logging import setup_logging
 
-    config = load_config(_config_path(args))
+    config = _load_config(args)
     report_dir = Path(config.reports.output_dir)
     logger = setup_logging(report_dir)
     tables = _resolve_tables(
@@ -247,7 +259,7 @@ def _analyze_lob(args: list[str]) -> int:
     from oracle_pg_sync.reports.writer_html import write_html_report
     from oracle_pg_sync.utils.logging import setup_logging
 
-    config = load_config(_config_path(args))
+    config = _load_config(args)
     report_dir = Path(config.reports.output_dir)
     logger = setup_logging(report_dir)
     tables = _resolve_tables(
@@ -418,7 +430,7 @@ def _tables_arg(args: list[str]) -> list[str] | None:
 
 
 def _latest_failed_run_id(args: list[str]) -> str:
-    config = load_config(_config_path(args))
+    config = _load_config(args)
     store = CheckpointStore(config.sync.checkpoint_dir)
     for row in store.list_runs():
         if row.get("status") == "failed":
@@ -427,7 +439,7 @@ def _latest_failed_run_id(args: list[str]) -> str:
 
 
 def _print_status(args: list[str]) -> None:
-    config = load_config(_config_path(args))
+    config = _load_config(args)
     report_dir = Path(config.reports.output_dir)
     store = CheckpointStore(config.sync.checkpoint_dir)
     runs = store.list_runs()
@@ -442,7 +454,7 @@ def _print_status(args: list[str]) -> None:
 
 
 def _print_latest_report(args: list[str]) -> None:
-    config = load_config(_config_path(args))
+    config = _load_config(args)
     report_dir = Path(config.reports.output_dir)
     manifests = sorted(report_dir.glob("run_*/manifest.json"), reverse=True)
     if not manifests:
@@ -461,6 +473,31 @@ def _config_path(args: list[str]) -> str:
         if arg.startswith("--config="):
             return arg.split("=", 1)[1]
     return "config.yaml"
+
+
+def _env_file_arg(args: list[str]) -> str | None:
+    return _arg_value(args, "--env-file")
+
+
+def _load_config(args: list[str]):
+    return load_config(_config_path(args), env_file=_env_file_arg(args))
+
+
+def _extract_leading_global_args(args: list[str]) -> tuple[list[str], list[str]]:
+    global_args: list[str] = []
+    rest = list(args)
+    while rest:
+        item = rest[0]
+        if item in {"--env-file", "--config"} and len(rest) >= 2:
+            global_args.extend(rest[:2])
+            rest = rest[2:]
+            continue
+        if item.startswith("--env-file=") or item.startswith("--config="):
+            global_args.append(item)
+            rest = rest[1:]
+            continue
+        break
+    return global_args, rest
 
 
 def _expand_bare_lob_flag(args: list[str]) -> list[str]:

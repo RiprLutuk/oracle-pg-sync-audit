@@ -11,7 +11,19 @@ DEPENDENCY_HEAVY_FIELDS = [
     "stored_procedure_count_related_oracle",
     "function_count_related_postgres",
 ]
-TOP_ROWCOUNT_FIELDS = ["table_name", "oracle_row_count", "postgres_row_count", "status"]
+TOP_ROWCOUNT_FIELDS = [
+    "table_name",
+    "source_schema",
+    "source_table",
+    "target_schema",
+    "target_table",
+    "effective_where",
+    "oracle_row_count",
+    "postgres_row_count",
+    "row_count_match",
+    "row_count_diff",
+    "status",
+]
 COLUMN_DIFF_FIELDS = [
     "table_name",
     "column_name",
@@ -25,7 +37,18 @@ COLUMN_DIFF_FIELDS = [
     "reason",
     "suggested_action",
 ]
-SYNC_PROBLEM_FIELDS = ["table_name", "mode", "status", "rows_loaded", "message"]
+SYNC_PROBLEM_FIELDS = [
+    "table_name",
+    "mode",
+    "status",
+    "rows_loaded",
+    "rows_read_from_oracle",
+    "rows_written_to_postgres",
+    "rows_failed",
+    "row_count_diff",
+    "validation_status",
+    "message",
+]
 CHECKSUM_FIELDS = [
     "table_name",
     "chunk_key",

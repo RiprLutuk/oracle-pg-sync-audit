@@ -6,7 +6,7 @@ from typing import Any
 
 import oracledb
 
-from oracle_pg_sync.config import OracleConfig
+from oracle_pg_sync.config import OracleConfig, validate_oracle_config
 from oracle_pg_sync.utils.naming import oracle_name
 
 
@@ -21,6 +21,7 @@ def init_client(config: OracleConfig) -> None:
 
 
 def connect(config: OracleConfig):
+    validate_oracle_config(config)
     init_client(config)
     con = oracledb.connect(
         user=config.user,

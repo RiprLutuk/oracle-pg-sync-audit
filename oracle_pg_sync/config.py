@@ -10,6 +10,8 @@ from typing import Any
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)(?::-(.*?))?\}")
 _SIZE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([KMGT]?I?B?)?\s*$", re.IGNORECASE)
+_LAST_ENV_FILE: Path | None = None
+_LAST_ENV_LOADED = False
 
 
 @dataclass
@@ -81,11 +83,26 @@ class ChecksumConfig:
     batch_size: int = 5000
     chunk_key: str | None = None
     sample_percent: float = 1.0
+    exclude_lob_by_default: bool = True
 
 
 @dataclass
 class ValidationConfig:
     checksum: ChecksumConfig = field(default_factory=ChecksumConfig)
+    rowcount: "RowcountValidationConfig" = field(default_factory=lambda: RowcountValidationConfig())
+    missing_keys: "MissingKeysConfig" = field(default_factory=lambda: MissingKeysConfig())
+
+
+@dataclass
+class RowcountValidationConfig:
+    enabled: bool = True
+    fail_on_mismatch: bool = True
+
+
+@dataclass
+class MissingKeysConfig:
+    enabled: bool = True
+    sample_limit: int = 1000
 
 
 @dataclass
@@ -112,6 +129,9 @@ class LobStrategyConfig:
     columns: dict[str, LobColumnConfig] = field(default_factory=dict)
     stream_batch_size: int = 100
     lob_chunk_size_bytes: int = 1024 * 1024
+    bytea_format: str = "hex"
+    clob_null_byte_policy: str = "remove"
+    fail_on_lob_read_error: bool = True
     validation: dict[str, Any] = field(default_factory=dict)
     warn_on_lob_larger_than_mb: int | None = 50
     fail_on_lob_larger_than_mb: int | None = None
@@ -175,6 +195,8 @@ class SyncConfig:
     staging_retention_count: int = 5
     max_failures: int = 3
     cooldown_minutes: int = 30
+    skip_failed_rows: bool = False
+    failed_row_sample_limit: int = 20
 
 
 @dataclass
@@ -246,20 +268,101 @@ class AppConfig:
         return result
 
     def table_config(self, table_name: str) -> TableConfig | None:
+        return self.resolve_table_config(table_name, strict=False)
+
+    def resolve_table_config(self, table_name: str, *, strict: bool = True) -> TableConfig | None:
+        matches = self._table_resolution_matches(table_name)
+        if not matches:
+            if strict:
+                raise ValueError(f"table not found in config: {table_name}")
+            return None
+        best_priority = min(priority for priority, _ in matches)
+        best = [table for priority, table in matches if priority == best_priority]
+        if len(best) > 1:
+            choices = ", ".join(_table_mapping_label(table, self) for table in best)
+            raise ValueError(f"Ambiguous table {table_name}; matches: {choices}")
+        return best[0]
+
+    def resolve_table_name(self, table_name: str, *, strict: bool = False) -> str:
+        table = self.resolve_table_config(table_name, strict=strict)
+        return table.name if table else table_name
+
+    def _table_resolution_matches(self, table_name: str) -> list[tuple[int, TableConfig]]:
         from oracle_pg_sync.utils.naming import split_schema_table
 
-        key = split_schema_table(table_name, self.postgres.schema).key
+        requested = str(table_name).strip()
+        requested_l = requested.lower()
+        requested_split = split_schema_table(requested, self.postgres.schema)
+        requested_fq = requested_split.fqname.lower()
+        requested_table = requested_split.table.lower()
+        matches: list[tuple[int, TableConfig]] = []
         for table in self.tables:
-            if split_schema_table(table.name, self.postgres.schema).key == key:
-                return table
-        return None
+            target_schema = table.target_schema or split_schema_table(table.name, self.postgres.schema).schema
+            target_table = table.target_table or split_schema_table(table.name, self.postgres.schema).table
+            source_schema = table.source_schema or self.oracle.schema
+            source_table = table.source_table or target_table
+            candidates = [
+                (1, table.name.lower()),
+                (2, f"{target_schema}.{target_table}".lower()),
+                (3, f"{source_schema}.{source_table}".lower()),
+                (4, target_table.lower()),
+                (5, source_table.lower()),
+            ]
+            for priority, candidate in candidates:
+                if requested_l == candidate or requested_fq == candidate or requested_table == candidate and "." not in candidate:
+                    matches.append((priority, table))
+                    break
+        return matches
+
+
+def load_environment(env_file: str | Path | None = None, *, config_path: Path | None = None) -> bool:
+    global _LAST_ENV_FILE, _LAST_ENV_LOADED
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError:
+        _LAST_ENV_FILE = Path(env_file) if env_file else None
+        _LAST_ENV_LOADED = False
+        return False
+
+    if env_file:
+        path = Path(env_file)
+        if not path.is_absolute() and config_path is not None:
+            path = config_path.parent / path
+        if not path.exists():
+            raise RuntimeError(f"Environment file not found: {path}")
+        loaded = load_dotenv(path, override=False)
+        _LAST_ENV_FILE = path
+        _LAST_ENV_LOADED = bool(loaded)
+        return _LAST_ENV_LOADED
+
+    default_path = Path.cwd() / ".env"
+    if config_path is not None and (config_path.parent / ".env").exists():
+        default_path = config_path.parent / ".env"
+    if not default_path.exists():
+        _LAST_ENV_FILE = default_path
+        _LAST_ENV_LOADED = False
+        return False
+    loaded = load_dotenv(default_path, override=False)
+    _LAST_ENV_FILE = default_path
+    _LAST_ENV_LOADED = bool(loaded)
+    return _LAST_ENV_LOADED
+
+
+def env_status() -> tuple[bool, str]:
+    if _LAST_ENV_FILE:
+        return _LAST_ENV_LOADED, str(_LAST_ENV_FILE)
+    return _LAST_ENV_LOADED, ".env"
 
 
 def _expand_env(value: Any) -> Any:
     if isinstance(value, str):
         def repl(match: re.Match[str]) -> str:
             name, default = match.group(1), match.group(2)
-            return os.getenv(name, default or "")
+            if name in os.environ:
+                return os.environ[name]
+            if default is not None:
+                return default
+            raise RuntimeError(f"Environment variable {name} is not set. Check .env or export it.")
 
         return _ENV_PATTERN.sub(repl, value)
     if isinstance(value, list):
@@ -282,20 +385,11 @@ def _load_raw_config(path: Path) -> dict[str, Any]:
     return yaml.safe_load(text) or {}
 
 
-def load_config(path: str | Path = "config.yaml") -> AppConfig:
+def load_config(path: str | Path = "config.yaml", *, env_file: str | Path | None = None) -> AppConfig:
     config_path = Path(path)
     raw_pre_env = _load_raw_config(config_path)
-    env_file = raw_pre_env.get("env_file")
-    try:
-        from dotenv import load_dotenv
-    except ModuleNotFoundError:
-        load_dotenv = None
-    if env_file:
-        if load_dotenv:
-            load_dotenv(config_path.parent / str(env_file))
-    else:
-        if load_dotenv:
-            load_dotenv()
+    configured_env_file = env_file if env_file is not None else raw_pre_env.get("env_file")
+    load_environment(configured_env_file, config_path=config_path)
 
     raw = _expand_env(raw_pre_env)
     oracle = OracleConfig(**(raw.get("oracle") or {}))
@@ -329,6 +423,61 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
         validation=_validation_config_from_raw(raw.get("validation") or {}),
         lob_strategy=_lob_strategy_from_raw(raw.get("lob_strategy") or {}, default="error"),
     )
+
+
+def validate_oracle_config(config: OracleConfig) -> None:
+    missing: list[str] = []
+    if not config.dsn and not config.host:
+        missing.append("ORACLE_HOST")
+    if not config.user:
+        missing.append("ORACLE_USER")
+    if not config.password:
+        missing.append("ORACLE_PASSWORD")
+    if missing:
+        raise RuntimeError(_missing_env_message(missing))
+
+
+def validate_postgres_config(config: PostgresConfig) -> None:
+    missing: list[str] = []
+    if not config.host:
+        missing.append("PG_HOST")
+    if not config.port:
+        missing.append("PG_PORT")
+    if not config.database:
+        missing.append("PG_DATABASE")
+    if not config.user:
+        missing.append("PG_USER")
+    if not config.password:
+        missing.append("PG_PASSWORD")
+    if missing:
+        raise RuntimeError(_missing_env_message(missing))
+
+
+def missing_required_env_vars(config: AppConfig) -> list[str]:
+    missing: list[str] = []
+    if not config.oracle.dsn and not config.oracle.host:
+        missing.append("ORACLE_HOST")
+    if not config.oracle.user:
+        missing.append("ORACLE_USER")
+    if not config.oracle.password:
+        missing.append("ORACLE_PASSWORD")
+    if not config.postgres.host:
+        missing.append("PG_HOST")
+    if not config.postgres.port:
+        missing.append("PG_PORT")
+    if not config.postgres.database:
+        missing.append("PG_DATABASE")
+    if not config.postgres.user:
+        missing.append("PG_USER")
+    if not config.postgres.password:
+        missing.append("PG_PASSWORD")
+    return missing
+
+
+def _missing_env_message(names: list[str]) -> str:
+    if len(names) == 1:
+        return f"Environment variable {names[0]} is not set. Check .env or export it."
+    return f"Environment variables {', '.join(names)} are not set. Check .env or export them."
 
 
 def _load_tables_config(raw: dict[str, Any], config_path: Path, tables_file: Path | None) -> list[TableConfig]:
@@ -366,7 +515,13 @@ def _incremental_config_from_raw(raw: dict[str, Any]) -> IncrementalConfig:
 
 def _validation_config_from_raw(raw: dict[str, Any]) -> ValidationConfig:
     checksum_raw = raw.get("checksum") or {}
-    return ValidationConfig(checksum=ChecksumConfig(**checksum_raw))
+    rowcount_raw = raw.get("rowcount") or {}
+    missing_keys_raw = raw.get("missing_keys") or {}
+    return ValidationConfig(
+        checksum=ChecksumConfig(**checksum_raw),
+        rowcount=RowcountValidationConfig(**rowcount_raw),
+        missing_keys=MissingKeysConfig(**missing_keys_raw),
+    )
 
 
 def _job_config_from_raw(raw: dict[str, Any]) -> JobConfig:
@@ -401,10 +556,24 @@ def _lob_strategy_from_raw(raw: dict[str, Any], *, default: str | None) -> LobSt
         columns=columns,
         stream_batch_size=int(raw.get("stream_batch_size", 100) or 100),
         lob_chunk_size_bytes=int(raw.get("lob_chunk_size_bytes", 1024 * 1024) or 1024 * 1024),
+        bytea_format=str(raw.get("bytea_format", "hex") or "hex"),
+        clob_null_byte_policy=str(raw.get("clob_null_byte_policy", "remove") or "remove"),
+        fail_on_lob_read_error=bool(raw.get("fail_on_lob_read_error", True)),
         validation=dict(raw.get("validation") or {}),
         warn_on_lob_larger_than_mb=raw.get("warn_on_lob_larger_than_mb", 50),
         fail_on_lob_larger_than_mb=raw.get("fail_on_lob_larger_than_mb"),
     )
+
+
+def _table_mapping_label(table: TableConfig, config: AppConfig) -> str:
+    from oracle_pg_sync.utils.naming import split_schema_table
+
+    target = split_schema_table(table.name, config.postgres.schema)
+    target_schema = table.target_schema or target.schema
+    target_table = table.target_table or target.table
+    source_schema = table.source_schema or config.oracle.schema
+    source_table = table.source_table or target_table
+    return f"{source_schema}.{source_table} -> {target_schema}.{target_table}"
 
 
 def _lob_column_config_from_raw(value: Any) -> LobColumnConfig:

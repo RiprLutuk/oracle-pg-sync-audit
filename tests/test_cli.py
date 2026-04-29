@@ -16,7 +16,7 @@ from oracle_pg_sync.cli import (
     main as cli_main,
 )
 from oracle_pg_sync.config import AppConfig, OracleConfig, PostgresConfig, TableConfig
-from oracle_pg_sync.ops import _expand_bare_lob_flag, main as ops_main
+from oracle_pg_sync.ops import _expand_bare_lob_flag, _extract_leading_global_args, main as ops_main
 
 
 class CliTest(unittest.TestCase):
@@ -147,6 +147,32 @@ tables:
 
         self.assertTrue(args.execute)
         self.assertEqual(args.lob, "stream")
+
+    def test_cli_accepts_env_file_before_or_after_command(self):
+        before = build_parser().parse_args(["--env-file", ".env.prod", "sync"])
+        after = build_parser().parse_args(["sync", "--env-file", ".env.dev"])
+
+        self.assertEqual(before.env_file, ".env.prod")
+        self.assertEqual(after.env_file, ".env.dev")
+
+    def test_ops_accepts_leading_env_file(self):
+        global_args, rest = _extract_leading_global_args(["--env-file", ".env.prod", "doctor", "--offline"])
+
+        self.assertEqual(global_args, ["--env-file", ".env.prod"])
+        self.assertEqual(rest, ["doctor", "--offline"])
+
+    def test_sync_accepts_rowcount_validation_flags(self):
+        args = build_parser().parse_args(["sync", "--no-rowcount-validation", "--rowcount-only"])
+
+        self.assertTrue(args.no_rowcount_validation)
+        self.assertTrue(args.rowcount_only)
+
+    def test_validate_accepts_missing_keys(self):
+        args = build_parser().parse_args(["validate", "missing-keys", "--tables", "A_HP_BATCH"])
+
+        self.assertEqual(args.command, "validate")
+        self.assertEqual(args.validate_action, "missing-keys")
+        self.assertEqual(args.tables, ["A_HP_BATCH"])
 
     def test_sync_accepts_safe_modes_and_simulate(self):
         args = build_parser().parse_args(["sync", "--mode", "truncate_safe", "--simulate"])
