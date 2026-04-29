@@ -1,6 +1,7 @@
 # Production Safety Features
 
-Fitur di halaman ini membuat sync lebih aman untuk run production besar. Default tetap aman: `sync` adalah dry-run kecuali command diberi `--execute`.
+Fitur di halaman ini membuat sync lebih aman untuk run production besar.
+Default tetap aman: `sync` adalah dry-run kecuali command diberi `--execute`.
 
 ## Checkpoint dan Resume
 
@@ -28,7 +29,9 @@ Reset checkpoint:
 python -m oracle_pg_sync sync --config config.yaml --reset-checkpoint RUN_ID
 ```
 
-Untuk table yang punya `key_columns`, Oracle ke PostgreSQL dapat diproses per range key sehingga chunk yang sudah `success` tidak diulang saat resume. Jika tidak ada key, tool menyimpan satu chunk `full`.
+Untuk table yang punya `key_columns`, Oracle ke PostgreSQL dapat diproses per
+range key sehingga chunk yang sudah `success` tidak diulang saat resume. Jika
+tidak ada key, tool menyimpan satu chunk `full`.
 
 ## Incremental Sync
 
@@ -68,7 +71,8 @@ python -m oracle_pg_sync sync --config config.yaml --reset-watermark public.samp
 
 Strategi:
 
-- `updated_at`: memakai nilai max timestamp setelah sync sukses. Overlap window diterapkan saat membaca watermark agar update terlambat tidak terlewat.
+- `updated_at`: memakai nilai max timestamp setelah sync sukses.
+  Overlap window diterapkan saat membaca watermark agar update terlambat tidak terlewat.
 - `numeric_key`: memakai nilai max numeric key/id. Cocok untuk append-only table.
 - `oracle_scn`: config/interface tersedia, tetapi tool akan gagal jelas karena implementasi Flashback/SCN belum aktif.
 
@@ -104,19 +108,47 @@ sync:
   staging_schema: null
 ```
 
-`staging` meload data penuh ke staging table dulu, lalu target baru di-`TRUNCATE` dan diisi ulang setelah staging selesai. `restart_table` reload target dari awal. Checkpoint table phase mencatat `table_loaded`, `table_validated`, dan `table_committed`; watermark baru diupdate setelah commit.
+`staging` meload data penuh ke staging table dulu, lalu target baru di-`TRUNCATE`
+dan diisi ulang setelah staging selesai. `restart_table` reload target dari awal.
+Checkpoint table phase mencatat `table_loaded`, `table_validated`, dan
+`table_committed`; watermark baru diupdate setelah commit.
 
 ## Dependency-Safe Sync
 
-`truncate` adalah default production karena object table existing tetap dipertahankan. Setiap `sync`/`all` membuat dependency report:
+`truncate` adalah default production karena object table existing tetap
+dipertahankan. Setiap `sync`/`all` membuat dependency report:
 
 - `dependency_pre.csv`: dependency risk sebelum load.
 - `dependency_post.csv`: dependency setelah load.
-- `dependency_maintenance.csv`: hasil Oracle compile invalid object, PostgreSQL materialized view refresh, dan validasi dependent object.
+- `dependency_maintenance.csv`: hasil Oracle compile invalid object,
+  PostgreSQL materialized view refresh, dan validasi dependent object.
 
-Oracle maintenance mencakup invalid `VIEW`, `PROCEDURE`, `FUNCTION`, `PACKAGE`, dan `PACKAGE BODY`. PostgreSQL maintenance mencoba `REFRESH MATERIALIZED VIEW` untuk MV dependent dan memvalidasi keberadaan view/function/procedure/trigger dependent.
+### Auto Lifecycle
 
-Mode `swap` tetap tidak direkomendasikan untuk production dependency-heavy schema. Jika dipakai dengan execute, dependency pre-report dibuat sebelum data berubah agar risk review tersimpan di report run.
+Saat `--execute` dipakai, lifecycle otomatis adalah:
+
+1. Precheck dependency dan tulis `dependency_pre.csv`.
+2. Jalankan sync table.
+3. Refresh PostgreSQL materialized view dependent.
+4. Compile Oracle invalid `VIEW`, `PROCEDURE`, `FUNCTION`, `PACKAGE`, dan `PACKAGE BODY`.
+5. Validasi ulang dependent object PostgreSQL.
+6. Postcheck dependency dan tulis `dependency_post.csv`.
+
+Semua hasil maintenance masuk ke `dependency_maintenance.csv`.
+
+### Manual Review
+
+Tetap review manual sebelum execute jika:
+
+- `dependency_pre.csv` berisi banyak view/MV/procedure/package.
+- Mode `swap` dipakai atau `sync.allow_swap: true`.
+- Ada materialized view besar yang refresh-nya butuh window khusus.
+- Ada Oracle package/procedure business-critical yang tidak boleh compile otomatis di jam sibuk.
+- Ada PostgreSQL function dependency yang tidak muncul penuh di `pg_depend`.
+
+Mode `swap` tetap tidak direkomendasikan untuk production dependency-heavy
+schema. Jika dipakai dengan execute, dependency pre-report dibuat sebelum data
+berubah agar risk review tersimpan di report run.
 
 ## Scheduler Pack
 
@@ -140,7 +172,8 @@ ops sync --profile every_5min --go
 
 ## LOB Strategy
 
-Default sync untuk LOB adalah `error`: fail early sebelum data diubah. Ini disengaja agar BLOB/CLOB/NCLOB/LONG besar tidak tersalin tanpa keputusan DBA.
+Default sync untuk LOB adalah `error`: fail early sebelum data diubah.
+Ini disengaja agar BLOB/CLOB/NCLOB/LONG besar tidak tersalin tanpa keputusan DBA.
 
 Tipe Oracle yang didukung:
 
@@ -205,7 +238,9 @@ Setiap audit/sync/all membuat manifest:
 reports/run_<timestamp>_<run_id>/manifest.json
 ```
 
-Manifest berisi command, waktu mulai/selesai, durasi, git commit, hash config, scope table, ringkasan rows, checkpoint path, report files, dan error. Password/secret disanitasi sebelum ditulis.
+Manifest berisi command, waktu mulai/selesai, durasi, git commit, hash config,
+scope table, ringkasan rows, checkpoint path, report files, dan error.
+Password/secret disanitasi sebelum ditulis.
 
 `report.html` otomatis menautkan manifest terbaru jika ada.
 
@@ -221,4 +256,11 @@ python -m oracle_pg_sync audit --config config.yaml --tables-file configs/tables
 
 ## CI
 
-GitHub Actions menjalankan unit test tanpa koneksi Oracle/PostgreSQL real. Database behavior baru ditest dengan unit test, stub, dan SQLite lokal untuk checkpoint.
+GitHub Actions menjalankan:
+
+- compile check;
+- unit test;
+- smoke test CLI `ops --help`, `ops sync` dry-run via fake runner, dan `ops report latest`;
+- config/example parse;
+- committed-secret check;
+- PostgreSQL service integration untuk reverse MERGE/truncate/insert plumbing dengan fake Oracle cursor.

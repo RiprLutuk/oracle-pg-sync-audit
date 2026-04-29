@@ -9,6 +9,8 @@ def setup_logging(report_dir: Path, level: int = logging.INFO) -> logging.Logger
     report_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("oracle_pg_sync")
     logger.setLevel(level)
+    for handler in logger.handlers:
+        handler.close()
     logger.handlers.clear()
 
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")

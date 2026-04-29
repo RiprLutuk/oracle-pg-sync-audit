@@ -64,7 +64,9 @@ Untuk subset:
 python -m oracle_pg_sync audit --config config.yaml --tables sample_customer sample_order --fast-count
 ```
 
-Jika config tidak berisi table list, audit akan mengambil semua table dari PostgreSQL schema. Untuk production, lebih aman tetap pakai table list eksplisit atau `--tables` agar scope jelas.
+Jika config tidak berisi table list, audit akan mengambil semua table dari
+PostgreSQL schema. Untuk production, lebih aman tetap pakai table list eksplisit
+atau `--tables` agar scope jelas.
 
 SQL suggestion dibuat otomatis di:
 
@@ -235,11 +237,17 @@ Sesuaikan nama table old dari database actual.
 
 Mode `truncate` tidak menyimpan old table. Rollback membutuhkan backup/restore eksternal.
 
-Untuk production full refresh di RDS, default tetap `truncate` dengan backup/restore plan. `swap` hanya dipakai kalau free storage cukup, dependency sudah direview, dan `sync.allow_swap: true` sudah diset.
+Untuk production full refresh di RDS, default tetap `truncate` dengan
+backup/restore plan. `swap` hanya dipakai kalau free storage cukup, dependency
+sudah direview, dan `sync.allow_swap: true` sudah diset.
 
 ## Kenapa Swap Bisa Memenuhi RDS Storage
 
-Mode `swap` bukan sekadar rename. Sebelum rename, PostgreSQL harus menyimpan staging table lengkap, index/constraint staging dari `LIKE INCLUDING ALL`, WAL untuk load, temp file untuk build index/sort, dan table lama sampai transaksi selesai. Jika `keep_old_after_swap: true`, table lama tetap tersimpan setelah commit. Di RDS semua ini memakai storage instance yang sama, jadi table besar bisa cepat membuat storage/temp penuh.
+Mode `swap` bukan sekadar rename. Sebelum rename, PostgreSQL harus menyimpan
+staging table lengkap, index/constraint staging dari `LIKE INCLUDING ALL`, WAL
+untuk load, temp file untuk build index/sort, dan table lama sampai transaksi
+selesai. Jika `keep_old_after_swap: true`, table lama tetap tersimpan setelah
+commit. Di RDS semua ini memakai storage instance yang sama.
 
 ## Rollback Mode Append
 

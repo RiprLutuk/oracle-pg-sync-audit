@@ -11,8 +11,11 @@ from oracle_pg_sync.config import load_config
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        print("Usage: ops audit|sync|resume|status|watermarks|reset-watermark|validate|report ...")
+        _print_usage()
         return 2
+    if args[0] in {"-h", "--help"}:
+        _print_usage()
+        return 0
 
     command = args[0]
     rest = args[1:]
@@ -47,6 +50,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     print(f"Unsupported ops command: {command}")
     return 2
+
+
+def _print_usage() -> None:
+    print("Usage: ops audit|sync|resume|status|watermarks|reset-watermark|validate|report ...")
+    print("")
+    print("Common:")
+    print("  ops audit --config config.yaml")
+    print("  ops sync --config config.yaml")
+    print("  ops sync --go --config config.yaml")
+    print("  ops resume [RUN_ID] --config config.yaml")
+    print("  ops status --config config.yaml")
+    print("  ops report latest --config config.yaml")
 
 
 def _latest_failed_run_id(args: list[str]) -> str:

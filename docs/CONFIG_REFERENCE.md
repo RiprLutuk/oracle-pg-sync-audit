@@ -125,7 +125,7 @@ Syntax `${PG_SCHEMA:-public}` berarti kalau env kosong, pakai `public`.
 
 - Mode default jika table tidak punya mode.
 - Nilai: `truncate`, `swap`, `append`, `upsert`.
-- Default project: `truncate`, supaya object existing seperti index, trigger, grants, view/materialized view dependency tetap aman dan tidak membuat staging table besar.
+- Default project: `truncate`, supaya object existing tetap aman dan tidak membuat staging table besar.
 
 `default_direction`
 
@@ -265,7 +265,15 @@ tables:
 Detail yang berubah per job, terutama PostgreSQL ke Oracle, bisa diisi di command:
 
 ```bash
-ops sync --direction postgres-to-oracle --tables public.address --mode upsert --key-columns address_id --incremental-column last_update --where "last_update >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'" --incremental --go
+ops sync \
+  --direction postgres-to-oracle \
+  --tables public.address \
+  --mode upsert \
+  --key-columns address_id \
+  --incremental-column last_update \
+  --where "last_update >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'" \
+  --incremental \
+  --go
 ```
 
 ## Incremental, Checksum, dan LOB
@@ -285,7 +293,8 @@ tables:
       delete_detection: false
 ```
 
-`strategy` dapat berisi `updated_at`, `numeric_key`, atau `oracle_scn`. `oracle_scn` saat ini akan gagal dengan pesan jelas karena Flashback/SCN belum diaktifkan.
+`strategy` dapat berisi `updated_at`, `numeric_key`, atau `oracle_scn`.
+`oracle_scn` saat ini akan gagal dengan pesan jelas karena Flashback/SCN belum diaktifkan.
 
 Table list sebaiknya hanya di satu tempat. Untuk production, gunakan:
 
@@ -301,7 +310,9 @@ File contoh table list ada di:
 configs/tables.example.yaml
 ```
 
-Contoh default dibuat simple. Field lanjutan seperti `where`, `key_columns`, `incremental`, checksum chunk, dan `lob_strategy` tetap valid jika memang ingin disimpan di YAML.
+Contoh default dibuat simple. Field lanjutan seperti `where`, `key_columns`,
+`incremental`, checksum chunk, dan `lob_strategy` tetap valid jika memang ingin
+disimpan di YAML.
 
 Checksum validation:
 

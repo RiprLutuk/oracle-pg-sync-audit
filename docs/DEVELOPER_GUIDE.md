@@ -172,7 +172,10 @@ Compile check:
 python -m compileall oracle_pg_sync tests
 ```
 
-CI GitHub Actions menjalankan install dependency, compile check, unit test, parse `config.yaml.example`, dan basic committed-secret checks. Test database production harus tetap memakai mock/stub atau SQLite lokal, bukan credential Oracle/PostgreSQL real.
+CI GitHub Actions menjalankan install dependency, compile check, unit test,
+smoke test CLI, parse `config.yaml.example`, committed-secret checks, dan
+PostgreSQL service integration untuk reverse MERGE plumbing. Test Oracle
+production tetap memakai mock/stub, bukan credential Oracle real.
 
 ## Style
 

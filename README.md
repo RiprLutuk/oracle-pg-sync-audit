@@ -1,15 +1,21 @@
 # oracle-pg-sync-audit
 
-[![CI](https://github.com/RiprLutuk/oracle-pg-sync-audit/actions/workflows/ci.yml/badge.svg)](https://github.com/RiprLutuk/oracle-pg-sync-audit/actions/workflows/ci.yml)
+[![CI]][ci-workflow]
 
-Project ini menyatukan audit metadata, compare rowcount, sync data Oracle ke PostgreSQL, sync reverse PostgreSQL ke Oracle, dan reporting DBA dalam satu CLI modular.
+[CI]: https://github.com/RiprLutuk/oracle-pg-sync-audit/actions/workflows/ci.yml/badge.svg
+[ci-workflow]: https://github.com/RiprLutuk/oracle-pg-sync-audit/actions/workflows/ci.yml
+
+Project ini menyatukan audit metadata, compare rowcount, sync data Oracle ke
+PostgreSQL, sync reverse PostgreSQL ke Oracle, dan reporting DBA dalam satu CLI
+modular.
 
 ## Guide Lengkap
 
 - [Quick Start](docs/USER_GUIDE.md): setup awal, install, isi `.env`, isi `config.yaml`, dan command harian.
 - [Configuration Reference](docs/CONFIG_REFERENCE.md): penjelasan semua field `.env` dan `config.yaml`.
 - [Production Runbook](docs/PRODUCTION_RUNBOOK.md): alur audit, dry-run, eksekusi, validasi, rollback, dan checklist produksi.
-- [Production Safety Features](docs/PRODUCTION_FEATURES.md): checkpoint/resume, incremental sync, checksum validation, LOB strategy, run manifest, dan CI.
+- [Production Safety Features](docs/PRODUCTION_FEATURES.md): checkpoint/resume,
+  incremental sync, checksum validation, LOB strategy, run manifest, dan CI.
 - [Report Reference](docs/REPORT_REFERENCE.md): arti setiap file report dan cara membaca status `MATCH`, `WARNING`, `MISMATCH`, `MISSING`.
 - [Troubleshooting](docs/TROUBLESHOOTING.md): error umum Oracle, PostgreSQL, dependency, rowcount, dan sync.
 - [Oracle Client Install](docs/ORACLE_CLIENT_INSTALL.md): cara install Oracle Instant Client 23.9 untuk thick mode.
@@ -60,7 +66,9 @@ Atau install sebagai package lokal supaya command `oracle-pg-sync-audit` tersedi
 pip install -e ".[dev]"
 ```
 
-Jika memakai Oracle Instant Client thick mode, ikuti [Oracle Client Install](docs/ORACLE_CLIENT_INSTALL.md), lalu isi `ORACLE_CLIENT_LIB_DIR` di `.env`.
+Jika memakai Oracle Instant Client thick mode, ikuti
+[Oracle Client Install](docs/ORACLE_CLIENT_INSTALL.md), lalu isi
+`ORACLE_CLIENT_LIB_DIR` di `.env`.
 
 ## Setup Config
 
@@ -96,7 +104,9 @@ rename_columns:
     legacy_status: status
 ```
 
-Daftar `tables` real disimpan di satu tempat: `configs/tables.yaml`. `config.yaml` cukup memakai `tables_file: configs/tables.yaml` untuk menghindari dua table list yang bisa berbeda.
+Daftar `tables` real disimpan di satu tempat: `configs/tables.yaml`.
+`config.yaml` cukup memakai `tables_file: configs/tables.yaml` untuk
+menghindari dua table list yang bisa berbeda.
 
 ## Command
 
@@ -110,9 +120,17 @@ python -m oracle_pg_sync audit-objects --config config.yaml
 python -m oracle_pg_sync audit --config config.yaml --suggest-drop
 ```
 
-Kalau `tables` kosong, command `audit` otomatis mengambil semua table dari PostgreSQL schema di config, sama seperti script `example/verify_oracle_pg.py` lama. Jika config masih punya table list tapi ingin compare semua table PostgreSQL, gunakan `--all-postgres-tables`. Hasil audit juga membuat `schema_suggestions.sql` di folder run berisi saran `ALTER TABLE ADD COLUMN`; opsi `--suggest-drop` menambahkan saran `DROP COLUMN` untuk kolom yang hanya ada di PostgreSQL.
+Kalau `tables` kosong, command `audit` otomatis mengambil semua table dari
+PostgreSQL schema di config, sama seperti script `example/verify_oracle_pg.py`
+lama. Jika config masih punya table list tapi ingin compare semua table
+PostgreSQL, gunakan `--all-postgres-tables`. Hasil audit juga membuat
+`schema_suggestions.sql` di folder run berisi saran `ALTER TABLE ADD COLUMN`;
+opsi `--suggest-drop` menambahkan saran `DROP COLUMN` untuk kolom yang hanya
+ada di PostgreSQL.
 
-Sync Oracle ke PostgreSQL dry-run, default aman. Default mode sekarang `truncate` supaya index, trigger, grants, view/materialized view dependency tetap nempel ke table yang sama dan tidak membuat staging table besar:
+Sync Oracle ke PostgreSQL dry-run, default aman. Default mode sekarang
+`truncate` supaya index, trigger, grants, view/materialized view dependency
+tetap nempel ke table yang sama dan tidak membuat staging table besar:
 
 ```bash
 python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer
@@ -124,7 +142,13 @@ Sync PostgreSQL ke Oracle dry-run:
 
 ```bash
 python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables public.address --mode upsert --key-columns address_id --incremental-column last_update --incremental
+python -m oracle_pg_sync sync --config config.yaml \
+  --direction postgres-to-oracle \
+  --tables public.address \
+  --mode upsert \
+  --key-columns address_id \
+  --incremental-column last_update \
+  --incremental
 ```
 
 Eksekusi sync sungguhan:
@@ -132,7 +156,14 @@ Eksekusi sync sungguhan:
 ```bash
 python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --execute
 python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate --execute
-ops sync --go --direction postgres-to-oracle --tables public.address --mode upsert --key-columns address_id --incremental-column last_update --where "last_update >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'" --incremental
+ops sync --go \
+  --direction postgres-to-oracle \
+  --tables public.address \
+  --mode upsert \
+  --key-columns address_id \
+  --incremental-column last_update \
+  --where "last_update >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'" \
+  --incremental
 ```
 
 Checkpoint/resume dan watermark:
@@ -213,12 +244,15 @@ Central Excel `report.xlsx` berisi sheet:
 - `13_Errors_Log`
 - `14_Config_Sanitized`
 
-`report.html` menampilkan total table, jumlah `MATCH`, `WARNING`, `MISMATCH`, `MISSING`, top table rowcount terbesar, column mismatch, rowcount mismatch, dependency terbesar, checksum mismatch, LOB summary, dan table yang gagal sync.
+`report.html` menampilkan total table, jumlah `MATCH`, `WARNING`, `MISMATCH`,
+`MISSING`, top table rowcount terbesar, column mismatch, rowcount mismatch,
+dependency terbesar, checksum mismatch, LOB summary, dan table yang gagal sync.
 
 ## Mode Sync
 
-- `truncate`: truncate target lalu load ulang. Ini default untuk menjaga object table existing seperti index, trigger, grants, view/materialized view dependency.
-- `swap`: create `__load`, copy data, verify rowcount, lalu rename staging menjadi live table. Tidak default dan execute di-guard oleh `allow_swap` karena bisa membuat storage/temp RDS penuh dan dependency by OID bisa terdampak.
+- `truncate`: truncate target lalu load ulang. Ini default untuk menjaga object table existing.
+- `swap`: create `__load`, copy data, verify rowcount, lalu rename staging menjadi live table.
+  Tidak default dan execute di-guard oleh `allow_swap` karena bisa membuat storage/temp RDS penuh.
 - `append`: insert data tanpa hapus data lama.
 - `upsert`: load ke staging lalu `INSERT ... ON CONFLICT`, wajib isi `key_columns`.
 - `delete`: khusus PostgreSQL ke Oracle, `DELETE` target lalu insert ulang dalam transaction.
@@ -233,10 +267,11 @@ Untuk reverse upsert, `key_columns` bisa berasal dari config atau command `--key
 - Checkpoint SQLite disimpan di `reports/checkpoints/` dan dapat dipakai untuk `--resume RUN_ID`.
 - Incremental sync memakai watermark tersimpan dan hanya mengupdate watermark setelah sync sukses.
 - Checksum validation dapat diaktifkan untuk mendeteksi mismatch data selain rowcount.
-- LOB sync default `error`; pilih `skip`, `null`, `stream`, atau `include` secara eksplisit. Oracle `BLOB`, `CLOB`, `NCLOB`, `LONG`, dan `LONG RAW` terdeteksi end-to-end, dengan mapping aman ke PostgreSQL `bytea`/`text`.
-- DBA shortcut CLI tersedia sebagai `ops`, misalnya `ops sync --go --lob stream`, `ops resume RUN_ID`, `ops status`, `ops watermarks`, dan `ops reset-watermark TABLE`.
-- Sync membuat dependency report sebelum dan sesudah load: `dependency_pre.csv` dan `dependency_post.csv`. Mode `swap` wajib punya risk/dependency report sebelum execute.
-- Saat execute, toolkit mencoba maintenance dependency: Oracle invalid object compile dan PostgreSQL materialized view refresh + validasi view/function dependent.
+- LOB sync default `error`; pilih `skip`, `null`, `stream`, atau `include` secara eksplisit.
+  Oracle `BLOB`, `CLOB`, `NCLOB`, `LONG`, dan `LONG RAW` terdeteksi end-to-end.
+- DBA shortcut CLI tersedia sebagai `ops`, misalnya `ops sync --go --lob stream` dan `ops resume RUN_ID`.
+- Sync membuat dependency report sebelum dan sesudah load: `dependency_pre.csv` dan `dependency_post.csv`.
+- Saat execute, toolkit mencoba Oracle invalid object compile dan PostgreSQL MV refresh/validation.
 - Scheduler pack tersedia di `jobs/daily.sh` dan `jobs/every_5min.sh`; keduanya memakai `--profile`, lock file, dan log rotation.
 - Cron template tersedia di `jobs/crontab.example`. Set `ALERT_COMMAND` untuk menerima alert saat job keluar non-zero.
 - Default `parallel_workers: 1`, `fast_count: true`, dan `exact_count_after_load: false` supaya tidak terlalu berat di client/server.
@@ -248,7 +283,10 @@ Untuk reverse upsert, `key_columns` bisa berasal dari config atau command `--key
 - Jangan aktifkan `truncate_cascade` tanpa approval DBA.
 - Exact count (`--exact-count`) memakai `SELECT COUNT(1)` dan bisa berat di table besar.
 - Untuk table besar, gunakan `fast_count: true` saat audit dan jalankan exact verification hanya saat window maintenance.
-- Audit type compatibility mengenali alias umum Oracle/PostgreSQL, termasuk `NUMBER`/`NUMERIC`, `VARCHAR2`/`varchar`, `CLOB`/`text`, `BLOB`/`bytea`, `DATE`/`timestamp`, `INTERVAL`/`interval`, `BOOLEAN`/`boolean`, `ROWID`/`text`, dan `JSON`/`jsonb`.
+- Audit type compatibility mengenali alias umum Oracle/PostgreSQL, termasuk
+  `NUMBER`/`NUMERIC`, `VARCHAR2`/`varchar`, `CLOB`/`text`, `BLOB`/`bytea`,
+  `DATE`/`timestamp`, `INTERVAL`/`interval`, `BOOLEAN`/`boolean`, `ROWID`/`text`,
+  dan `JSON`/`jsonb`.
 - Log tidak mencetak password.
 
 ## Known Limitation
@@ -256,7 +294,7 @@ Untuk reverse upsert, `key_columns` bisa berasal dari config atau command `--key
 - Dependency rebuild untuk view/materialized view kompleks belum otomatis.
 - Partitioned table dan LOB sangat besar mungkin butuh tuning batch/chunk tambahan.
 - Incremental `oracle_scn` baru tersedia sebagai interface/config guard; implementasi Flashback/SCN akan gagal jelas sampai diaktifkan.
-- PostgreSQL function/procedure body dependency ke table tidak selalu tersedia di `pg_depend`; gunakan global object compare untuk validasi object existence.
+- PostgreSQL function/procedure body dependency ke table tidak selalu tersedia di `pg_depend`.
 - Upsert membutuhkan unique index/constraint di PostgreSQL sesuai `key_columns`.
 - Type compatibility bersifat fuzzy untuk audit; keputusan final perubahan DDL tetap harus direview DBA.
 

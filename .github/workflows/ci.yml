@@ -30,10 +30,15 @@ jobs:
       - name: Verify editable CLI commands
         run: |
           oracle-pg-sync-audit --help
+          ops --help
+          ops sync --help
           ops report latest --config config.yaml.example
 
       - name: Compile
         run: python -m compileall -q oracle_pg_sync tests
+
+      - name: Smoke tests
+        run: python -m unittest tests.test_ops_smoke
 
       - name: Unit tests
         run: python -m unittest discover -s tests
@@ -62,3 +67,43 @@ jobs:
         run: |
           ! git ls-files | grep -E '(^|/)\.env$|(^|/)config\.yaml$|(^|/)configs/tables\.yaml$'
           ! git grep -n 'BEGIN .*PRIVATE KEY'
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: PostgreSQL integration smoke
+        env:
+          RUN_CONTAINER_TESTS: "1"
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGDATABASE: postgres
+          PGUSER: postgres
+          PGPASSWORD: postgres
+        run: python tests/integration_reverse_merge_container.py

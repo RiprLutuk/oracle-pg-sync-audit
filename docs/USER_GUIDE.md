@@ -1,6 +1,7 @@
 # User Guide
 
-Dokumen ini adalah panduan utama untuk menjalankan `oracle-pg-sync-audit` dari awal sampai menghasilkan report. Tool ini mendukung dua arah sync:
+Dokumen ini adalah panduan utama untuk menjalankan `oracle-pg-sync-audit`
+dari awal sampai menghasilkan report. Tool ini mendukung dua arah sync:
 
 - Oracle ke PostgreSQL.
 - PostgreSQL ke Oracle.
@@ -109,7 +110,8 @@ Nama table boleh `sample_customer` atau `public.sample_customer`. Jika schema ti
 `config.yaml` bawaan sudah diisi dari script lama di folder `example/`:
 
 - `config.yaml.example` dan `configs/tables.example.yaml` sengaja memakai table dummy.
-- Copy table list real dari environment lokal ke `configs/tables.yaml`, lalu pastikan `config.yaml` berisi `tables_file: configs/tables.yaml`.
+- Copy table list real dari environment lokal ke `configs/tables.yaml`.
+- Pastikan `config.yaml` berisi `tables_file: configs/tables.yaml`.
 - Gunakan `configs/tables.example.yaml` sebagai template table list baru.
 
 ## 5. Rename Column Mapping
@@ -235,7 +237,15 @@ Untuk job incremental manual dari PostgreSQL ke Oracle tanpa memasukkan filter k
 pakai runtime override pada satu table per command:
 
 ```bash
-ops sync --config config.yaml --direction postgres-to-oracle --tables public.address --mode upsert --key-columns address_id --incremental-column last_update --where "last_update >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'" --incremental --go
+ops sync --config config.yaml \
+  --direction postgres-to-oracle \
+  --tables public.address \
+  --mode upsert \
+  --key-columns address_id \
+  --incremental-column last_update \
+  --where "last_update >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'" \
+  --incremental \
+  --go
 ```
 
 Lihat hasilnya di:
@@ -254,7 +264,12 @@ Eksekusi sungguhan wajib pakai `--execute`:
 ```bash
 python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --execute
 python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate --execute
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode upsert --where "updated_at >= NOW() - INTERVAL '5 minutes'" --execute
+python -m oracle_pg_sync sync --config config.yaml \
+  --direction postgres-to-oracle \
+  --tables sample_customer \
+  --mode upsert \
+  --where "updated_at >= NOW() - INTERVAL '5 minutes'" \
+  --execute
 ```
 
 ## 10. Checkpoint, Incremental, Checksum, dan LOB

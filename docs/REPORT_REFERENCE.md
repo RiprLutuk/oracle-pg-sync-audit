@@ -1,6 +1,8 @@
 # Report Reference
 
-Semua output eksekusi masuk ke folder `reports/run_<timestamp>_<run_id>/` kecuali `reports.output_dir` diubah. Root `reports/` hanya dipakai untuk checkpoint, lock, log runtime global, dan kumpulan run folder.
+Semua output eksekusi masuk ke folder `reports/run_<timestamp>_<run_id>/`
+kecuali `reports.output_dir` diubah. Root `reports/` hanya dipakai untuk
+checkpoint, lock, log runtime global, dan kumpulan run folder.
 
 ## Daftar File
 
@@ -56,24 +58,38 @@ Semua output eksekusi masuk ke folder `reports/run_<timestamp>_<run_id>/` kecual
 `run_<timestamp>_<run_id>/manifest.json`
 
 - Manifest durable setiap audit/sync/all.
-- Berisi run id, command, durasi, git commit, config hash, scope table, rows summary, checksum/lob summary, checkpoint path, report files, dan errors.
+- Berisi run id, command, durasi, git commit, config hash, scope table,
+  rows summary, checksum/lob summary, checkpoint path, report files, dan errors.
 - Password/secret tidak ditulis.
 
 `run_<timestamp>_<run_id>/report.xlsx`
 
 - Centralized Excel workbook untuk audit/sync run.
-- Sheet: `00_Dashboard`, `01_Run_Summary`, `02_Table_Sync_Status`, `03_Rowcount_Compare`, `04_Checksum_Result`, `05_Column_Structure_Diff`, `06_Index_Compare`, `07_View_SP_Sequence`, `08_LOB_Columns`, `09_Failed_Tables`, `10_Watermark`, `11_Checkpoint_Resume`, `12_Performance`, `13_Errors_Log`, `14_Config_Sanitized`.
 - Header frozen, auto-filter aktif, width kolom otomatis, dan status penting diberi warna.
+- Tidak menulis password/secret atau raw LOB content.
+
+Sheet:
+
+- `00_Dashboard`: ringkasan total table, success/failed, checksum, row processed, watermark, dan resume usage.
+- `01_Run_Summary`: summary run dengan duration, warning, dan dry-run count.
+- `02_Table_Sync_Status`: status per table dari sync atau inventory audit.
+- `03_Rowcount_Compare`: rowcount Oracle/PostgreSQL dan status match.
+- `04_Checksum_Result`: hasil checksum table/chunk.
+- `05_Column_Structure_Diff`: missing/extra/ordinal/type mismatch.
+- `06_Index_Compare`: dependency/index rows yang terdeteksi.
+- `07_View_SP_Sequence`: view, materialized view, procedure, function, package, dan sequence dependency.
+- `08_LOB_Columns`: kolom LOB terdeteksi, strategy, target type, dan validation mode.
+- `09_Failed_Tables`: table dengan status `FAILED`, `MISMATCH`, atau `MISSING`.
+- `10_Watermark`: watermark tersimpan saat run ditulis.
+- `11_Checkpoint_Resume`: chunk/checkpoint status.
+- `12_Performance`: elapsed time, rows loaded, dan rows/second.
+- `13_Errors_Log`: error sync dan dependency maintenance.
+- `14_Config_Sanitized`: config sanitized untuk audit trail.
 
 `run_<timestamp>_<run_id>/report.html`
 
 - Dashboard HTML per run.
 - Berisi link lokal ke `report.xlsx` dan `manifest.json`.
-
-`run_<timestamp>_<run_id>/report.html`
-
-- Dashboard HTML untuk DBA.
-- Menampilkan link lokal ke manifest/workbook run tersebut.
 
 ## inventory_summary.csv
 

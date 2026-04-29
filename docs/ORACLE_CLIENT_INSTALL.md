@@ -1,6 +1,7 @@
 # Oracle Client Install
 
-`oracledb` bisa berjalan dalam thin mode tanpa Oracle Client. Namun beberapa database lama membutuhkan thick mode, misalnya saat muncul error:
+`oracledb` bisa berjalan dalam thin mode tanpa Oracle Client. Namun beberapa
+database lama membutuhkan thick mode, misalnya saat muncul error:
 
 ```text
 DPY-3015: password verifier type ... is not supported by python-oracledb in thin mode
