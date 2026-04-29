@@ -63,6 +63,22 @@ class CheckpointTest(unittest.TestCase):
 
             self.assertEqual(store.chunk_status("run1", "public.sample", "table_committed"), "success")
 
+    def test_claim_chunk_is_atomic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = CheckpointStore(Path(tmp) / "checkpoint.sqlite3")
+            store.create_run(run_id="run1", direction="oracle_to_postgres", source_db="ora", target_db="pg")
+            store.ensure_chunk(
+                run_id="run1",
+                direction="oracle_to_postgres",
+                source_db="ora",
+                target_db="pg",
+                chunk=Chunk("public.sample", "full"),
+            )
+
+            self.assertTrue(store.claim_chunk("run1", "public.sample", "full"))
+            self.assertFalse(store.claim_chunk("run1", "public.sample", "full"))
+            self.assertEqual(store.chunk_status("run1", "public.sample", "full"), "running")
+
     def test_rollback_action_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = CheckpointStore(Path(tmp) / "checkpoint.sqlite3")

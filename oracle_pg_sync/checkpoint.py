@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 import uuid
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta, timezone
@@ -52,13 +53,17 @@ class CheckpointStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_attempts = 3
         self._init_schema()
 
     def connect(self):
-        return sqlite3.connect(self.path)
+        con = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA busy_timeout = 30000")
+        return con
 
     def _init_schema(self) -> None:
-        with self.connect() as con:
+        def init(con: sqlite3.Connection) -> None:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sync_runs (
@@ -159,6 +164,8 @@ class CheckpointStore:
                 """
             )
 
+        self._write(init)
+
     def create_run(
         self,
         *,
@@ -169,8 +176,8 @@ class CheckpointStore:
         job_name: str = "",
         mode: str = "",
     ) -> None:
-        with self.connect() as con:
-            con.execute(
+        self._write(
+            lambda con: con.execute(
                 """
                 INSERT OR IGNORE INTO sync_runs
                 (run_id, direction, source_db, target_db, status, started_at, job_name, mode)
@@ -178,11 +185,12 @@ class CheckpointStore:
                 """,
                 (run_id, direction, source_db, target_db, utc_now(), job_name, mode),
             )
+        )
 
     def finish_run(self, run_id: str, *, status: str, error_message: str = "") -> None:
         _validate_status(status)
-        with self.connect() as con:
-            con.execute(
+        self._write(
+            lambda con: con.execute(
                 """
                 UPDATE sync_runs
                 SET status = ?, finished_at = ?, error_message = ?
@@ -190,6 +198,7 @@ class CheckpointStore:
                 """,
                 (status, utc_now(), error_message, run_id),
             )
+        )
 
     def list_runs(self) -> list[dict[str, Any]]:
         with self.connect() as con:
@@ -197,11 +206,12 @@ class CheckpointStore:
             return [dict(row) for row in con.execute("SELECT * FROM sync_runs ORDER BY started_at DESC")]
 
     def reset_run(self, run_id: str) -> None:
-        with self.connect() as con:
+        def reset(con: sqlite3.Connection) -> None:
             con.execute("DELETE FROM sync_chunks WHERE run_id = ?", (run_id,))
             con.execute("DELETE FROM rollback_actions WHERE run_id = ?", (run_id,))
             con.execute("DELETE FROM run_events WHERE run_id = ?", (run_id,))
             con.execute("DELETE FROM sync_runs WHERE run_id = ?", (run_id,))
+        self._write(reset)
 
     def record_event(
         self,
@@ -213,8 +223,8 @@ class CheckpointStore:
         message: str = "",
         details: dict[str, Any] | None = None,
     ) -> None:
-        with self.connect() as con:
-            con.execute(
+        self._write(
+            lambda con: con.execute(
                 """
                 INSERT INTO run_events
                 (run_id, event_time, table_name, phase, status, message, details)
@@ -222,6 +232,7 @@ class CheckpointStore:
                 """,
                 (run_id, utc_now(), table_name, phase, status, message, _json_text(details)),
             )
+        )
 
     def list_events(self, run_id: str) -> list[dict[str, Any]]:
         with self.connect() as con:
@@ -239,8 +250,8 @@ class CheckpointStore:
 
     def add_rollback_action(self, action: RollbackAction) -> None:
         payload = asdict(action)
-        with self.connect() as con:
-            con.execute(
+        self._write(
+            lambda con: con.execute(
                 """
                 INSERT OR REPLACE INTO rollback_actions (
                     run_id, table_name, direction, action_type, target_schema, target_table,
@@ -267,6 +278,7 @@ class CheckpointStore:
                     utc_now(),
                 ),
             )
+        )
 
     def rollback_actions(self, run_id: str) -> list[dict[str, Any]]:
         with self.connect() as con:
@@ -283,8 +295,8 @@ class CheckpointStore:
         return result
 
     def mark_rollback_action(self, run_id: str, table_name: str, action_type: str, *, status: str, notes: str = "") -> None:
-        with self.connect() as con:
-            con.execute(
+        self._write(
+            lambda con: con.execute(
                 """
                 UPDATE rollback_actions
                 SET status = ?, notes = ?, restored_at = ?
@@ -292,6 +304,7 @@ class CheckpointStore:
                 """,
                 (status, notes, utc_now(), run_id, table_name, action_type),
             )
+        )
 
     def circuit_status(self, job_key: str) -> dict[str, Any] | None:
         with self.connect() as con:
@@ -300,32 +313,30 @@ class CheckpointStore:
         return dict(row) if row else None
 
     def register_job_failure(self, job_key: str, *, cooldown_minutes: int, error_message: str) -> dict[str, Any]:
-        current = self.circuit_status(job_key) or {}
-        failure_count = int(current.get("failure_count") or 0) + 1
         now = utc_now()
         cooldown_until = ""
         if cooldown_minutes > 0:
             cooldown_until = (
                 datetime.now(timezone.utc).replace(microsecond=0) + timedelta(minutes=int(cooldown_minutes))
             ).isoformat(timespec="seconds")
-        with self.connect() as con:
-            con.execute(
+        self._write(
+            lambda con: con.execute(
                 """
                 INSERT INTO circuit_breakers (job_key, failure_count, last_failure_at, cooldown_until, last_error)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, 1, ?, ?, ?)
                 ON CONFLICT(job_key) DO UPDATE SET
-                    failure_count = excluded.failure_count,
+                    failure_count = circuit_breakers.failure_count + 1,
                     last_failure_at = excluded.last_failure_at,
                     cooldown_until = excluded.cooldown_until,
                     last_error = excluded.last_error
                 """,
-                (job_key, failure_count, now, cooldown_until, error_message),
+                (job_key, now, cooldown_until, error_message),
             )
+        )
         return self.circuit_status(job_key) or {}
 
     def clear_job_failures(self, job_key: str) -> None:
-        with self.connect() as con:
-            con.execute("DELETE FROM circuit_breakers WHERE job_key = ?", (job_key,))
+        self._write(lambda con: con.execute("DELETE FROM circuit_breakers WHERE job_key = ?", (job_key,)))
 
     def job_blocked(self, job_key: str, *, max_failures: int) -> dict[str, Any] | None:
         status = self.circuit_status(job_key)
@@ -347,8 +358,8 @@ class CheckpointStore:
         target_db: str,
         chunk: Chunk,
     ) -> None:
-        with self.connect() as con:
-            con.execute(
+        self._write(
+            lambda con: con.execute(
                 """
                 INSERT OR IGNORE INTO sync_chunks (
                     run_id, direction, source_db, target_db, table_name, primary_key,
@@ -368,6 +379,7 @@ class CheckpointStore:
                     _to_text(chunk.chunk_end),
                 ),
             )
+        )
 
     def chunk_status(self, run_id: str, table_name: str, chunk_key: str) -> str | None:
         with self.connect() as con:
@@ -378,8 +390,8 @@ class CheckpointStore:
         return str(row[0]) if row else None
 
     def start_chunk(self, run_id: str, table_name: str, chunk_key: str) -> None:
-        with self.connect() as con:
-            con.execute(
+        self._write(
+            lambda con: con.execute(
                 """
                 UPDATE sync_chunks
                 SET status = 'running', retry_count = retry_count + 1, started_at = ?, error_message = NULL
@@ -387,6 +399,21 @@ class CheckpointStore:
                 """,
                 (utc_now(), run_id, table_name, chunk_key),
             )
+        )
+
+    def claim_chunk(self, run_id: str, table_name: str, chunk_key: str) -> bool:
+        def claim(con: sqlite3.Connection) -> bool:
+            cur = con.execute(
+                """
+                UPDATE sync_chunks
+                SET status = 'running', retry_count = retry_count + 1, started_at = ?, error_message = NULL
+                WHERE run_id = ? AND table_name = ? AND chunk_key = ? AND status IN ('pending', 'failed')
+                """,
+                (utc_now(), run_id, table_name, chunk_key),
+            )
+            return bool(cur.rowcount)
+
+        return bool(self._write(claim))
 
     def finish_chunk(
         self,
@@ -400,8 +427,8 @@ class CheckpointStore:
         error_message: str = "",
     ) -> None:
         _validate_status(status)
-        with self.connect() as con:
-            con.execute(
+        self._write(
+            lambda con: con.execute(
                 """
                 UPDATE sync_chunks
                 SET status = ?, rows_attempted = ?, rows_success = ?, error_message = ?, finished_at = ?
@@ -409,6 +436,7 @@ class CheckpointStore:
                 """,
                 (status, rows_attempted, rows_success, error_message, utc_now(), run_id, table_name, chunk_key),
             )
+        )
 
     def mark_table_phase(
         self,
@@ -482,8 +510,8 @@ class CheckpointStore:
         column_name: str,
         value: Any,
     ) -> None:
-        with self.connect() as con:
-            con.execute(
+        self._write(
+            lambda con: con.execute(
                 """
                 INSERT INTO watermarks
                 (direction, table_name, strategy, column_name, watermark_value, updated_at)
@@ -493,6 +521,7 @@ class CheckpointStore:
                 """,
                 (direction, table_name, strategy, column_name, _to_text(value), utc_now()),
             )
+        )
 
     def list_watermarks(self) -> list[dict[str, Any]]:
         with self.connect() as con:
@@ -500,9 +529,12 @@ class CheckpointStore:
             return [dict(row) for row in con.execute("SELECT * FROM watermarks ORDER BY table_name, column_name")]
 
     def reset_watermark(self, table_name: str) -> int:
-        with self.connect() as con:
-            cur = con.execute("DELETE FROM watermarks WHERE table_name = ?", (table_name,))
-            return int(cur.rowcount or 0)
+        return int(
+            self._write(
+                lambda con: (con.execute("DELETE FROM watermarks WHERE table_name = ?", (table_name,))).rowcount or 0
+            )
+            or 0
+        )
 
     @staticmethod
     def _ensure_column(con: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
@@ -512,6 +544,21 @@ class CheckpointStore:
         }
         if column_name.lower() not in existing:
             con.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+    def _write(self, fn):
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(self._write_attempts):
+            try:
+                with self.connect() as con:
+                    return fn(con)
+            except sqlite3.OperationalError as exc:
+                last_error = exc
+                if "locked" not in str(exc).lower() or attempt + 1 >= self._write_attempts:
+                    raise
+                time.sleep(0.1 * (2**attempt))
+        if last_error:
+            raise last_error
+        return None
 
 
 def _validate_status(status: str) -> None:

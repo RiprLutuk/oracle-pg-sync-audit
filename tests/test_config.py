@@ -188,6 +188,34 @@ tables:
         self.assertTrue(table.validation.checksum.enabled)
         self.assertTrue(config.validation.rowcount.enabled)
 
+    def test_sync_parallel_runtime_config_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            path.write_text(
+                """
+oracle:
+  schema: APP
+postgres:
+  schema: public
+sync:
+  workers: 4
+  parallel_tables: true
+  parallel_chunks: true
+  max_db_connections: 6
+  respect_dependencies: true
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertEqual(config.sync.workers, 4)
+        self.assertEqual(config.sync.parallel_workers, 4)
+        self.assertTrue(config.sync.parallel_tables)
+        self.assertTrue(config.sync.parallel_chunks)
+        self.assertEqual(config.sync.max_db_connections, 6)
+        self.assertTrue(config.sync.respect_dependencies)
+
     def test_load_rich_lob_strategy_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"

@@ -2,6 +2,8 @@ import unittest
 import sys
 import types
 import logging
+import threading
+from unittest.mock import patch
 
 if "psycopg" not in sys.modules:
     psycopg_stub = types.ModuleType("psycopg")
@@ -22,6 +24,7 @@ if "oracledb" not in sys.modules:
 
 from oracle_pg_sync.config import AppConfig, OracleConfig, PostgresConfig, SyncConfig
 from oracle_pg_sync.sync.oracle_to_postgres import OracleToPostgresSync
+from oracle_pg_sync.sync.runtime import SyncExecutionContext
 
 
 class OracleToPostgresSyncTest(unittest.TestCase):
@@ -108,6 +111,103 @@ class OracleToPostgresSyncTest(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             sync._validate_copy_completeness(result)
+
+    def test_sync_tables_parallel_executes_all_tables(self):
+        class FakeExecutionContext:
+            def __init__(self):
+                self.workers = 2
+                self.max_db_connections = 2
+                self._labels = {}
+
+            def allow_table_parallelism(self, table_count):
+                return table_count > 1
+
+            def allow_chunk_parallelism(self, *, mode, table_count, chunk_count):
+                return False
+
+            def close(self):
+                return None
+
+            def worker_label(self):
+                ident = threading.get_ident()
+                if ident not in self._labels:
+                    self._labels[ident] = f"Worker-{len(self._labels) + 1}"
+                return self._labels[ident]
+
+            def table_logger(self, logger, table_name):
+                return logger
+
+        def fake_sync_table(
+            self,
+            table_name,
+            *,
+            execution_context=None,
+            **kwargs,
+        ):
+            return types.SimpleNamespace(
+                table_name=table_name,
+                status="SUCCESS",
+                worker_name=execution_context.worker_label() if execution_context else "",
+            )
+
+        sync = OracleToPostgresSync(
+            AppConfig(
+                oracle=OracleConfig(schema="APP"),
+                postgres=PostgresConfig(schema="public"),
+                sync=SyncConfig(workers=2, parallel_tables=True, max_db_connections=2),
+            )
+        )
+
+        with patch("oracle_pg_sync.sync.oracle_to_postgres.SyncExecutionContext", return_value=FakeExecutionContext()), patch.object(
+            OracleToPostgresSync,
+            "sync_table",
+            new=fake_sync_table,
+        ):
+            results = sync.sync_tables(["public.a", "public.b"], execute=True)
+
+        self.assertEqual([result.table_name for result in results], ["public.a", "public.b"])
+        self.assertTrue(all(result.status == "SUCCESS" for result in results))
+
+    def test_execution_context_reuses_oracle_connection_per_worker(self):
+        class DummyConnection:
+            def close(self):
+                return None
+
+        class DummyPool:
+            def connection(self):
+                class _Handle:
+                    def __enter__(self_inner):
+                        return DummyConnection()
+
+                    def __exit__(self_inner, *args):
+                        return False
+
+                return _Handle()
+
+            def close(self):
+                return None
+
+        connect_calls = []
+        config = AppConfig(
+            oracle=OracleConfig(schema="APP"),
+            postgres=PostgresConfig(host="localhost", database="db", user="user", password="secret", schema="public"),
+            sync=SyncConfig(workers=2, parallel_tables=True, max_db_connections=2),
+        )
+        logger = logging.getLogger("test_execution_context_reuses_oracle_connection_per_worker")
+
+        with patch("oracle_pg_sync.sync.runtime.postgres.connection_pool", return_value=DummyPool()), patch(
+            "oracle_pg_sync.sync.runtime.oracle.connect",
+            side_effect=lambda cfg: connect_calls.append(object()) or DummyConnection(),
+        ):
+            context = SyncExecutionContext(config, logger)
+            try:
+                with context.oracle_connection() as first:
+                    with context.oracle_connection() as second:
+                        self.assertIs(first, second)
+            finally:
+                context.close()
+
+        self.assertEqual(len(connect_calls), 1)
 
 
 if __name__ == "__main__":

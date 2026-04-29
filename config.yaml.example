@@ -22,7 +22,11 @@ sync:
   dry_run: true
   fast_count: true
   exact_count_after_load: false
-  parallel_workers: 1
+  workers: 1
+  parallel_tables: false
+  parallel_chunks: false
+  max_db_connections: 5
+  respect_dependencies: false
   batch_size: 10000
   chunk_size: 50000
   skip_on_structure_mismatch: true

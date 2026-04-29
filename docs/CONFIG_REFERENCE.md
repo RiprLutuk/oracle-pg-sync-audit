@@ -54,7 +54,12 @@ Important fields:
 - `dry_run`: keep `true` in production configs; execution still requires `--go`
 - `fast_count`: use metadata/statistics counts during audit
 - `exact_count_after_load`: perform post-load exact rowcount verification
-- `parallel_workers`
+- `workers`
+- `parallel_tables`
+- `parallel_chunks`
+- `max_db_connections`
+- `respect_dependencies`
+- `parallel_workers`: legacy alias for `workers`
 - `batch_size`
 - `chunk_size`
 - `skip_on_structure_mismatch`
@@ -86,6 +91,10 @@ Recommended production values:
 ```yaml
 sync:
   default_mode: truncate_safe
+  workers: 1
+  parallel_tables: false
+  parallel_chunks: false
+  max_db_connections: 5
   backup_before_truncate: true
   max_failures: 3
   cooldown_minutes: 30

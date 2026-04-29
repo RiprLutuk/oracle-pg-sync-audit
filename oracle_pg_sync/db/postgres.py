@@ -8,10 +8,33 @@ from psycopg import sql
 
 from oracle_pg_sync.config import PostgresConfig, validate_postgres_config
 
+try:
+    from psycopg_pool import ConnectionPool
+except ModuleNotFoundError:
+    ConnectionPool = None
+
 
 def connect(config: PostgresConfig, *, autocommit: bool = False):
     validate_postgres_config(config)
     return psycopg.connect(**config.conninfo(), autocommit=autocommit)
+
+
+def connection_pool(
+    config: PostgresConfig,
+    *,
+    min_size: int = 1,
+    max_size: int = 1,
+    timeout: int = 30,
+):
+    validate_postgres_config(config)
+    if ConnectionPool is None:
+        raise RuntimeError("psycopg_pool is required for PostgreSQL connection pooling")
+    return ConnectionPool(
+        conninfo=config.conninfo_string(),
+        min_size=max(1, int(min_size or 1)),
+        max_size=max(1, int(max_size or 1)),
+        timeout=max(1, int(timeout or 30)),
+    )
 
 
 def table_ident(schema: str, table: str) -> sql.Composed:

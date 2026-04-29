@@ -17,6 +17,7 @@ from oracle_pg_sync.metadata.compare import compare_table_metadata, inventory_ha
 from oracle_pg_sync.metadata.oracle_metadata import fetch_table_metadata as fetch_oracle_metadata
 from oracle_pg_sync.metadata.postgres_metadata import fetch_table_metadata as fetch_pg_metadata
 from oracle_pg_sync.sync.copy_loader import CopyMetrics, copy_rows
+from oracle_pg_sync.sync.runtime import DirectSyncExecutionContext, SyncExecutionContext
 from oracle_pg_sync.sync.staging import atomic_swap, create_backup_table, create_staging_like, drop_table
 from oracle_pg_sync.utils.naming import oracle_name, split_schema_table
 from oracle_pg_sync.validation import checksum_columns, checksum_result_row, stable_cursor_hash
@@ -97,6 +98,7 @@ class SyncResult:
     retry_attempts: int = 0
     watermark_candidate: PendingWatermark | None = None
     failed_tables: list[str] = field(default_factory=list)
+    worker_name: str = ""
 
     def as_row(self) -> dict[str, Any]:
         return {
@@ -153,6 +155,7 @@ class SyncResult:
             "rows_per_second": self.rows_per_second,
             "lob_bytes_processed": self.lob_bytes_processed,
             "retry_attempts": self.retry_attempts,
+            "worker_name": self.worker_name,
         }
 
 
@@ -184,56 +187,100 @@ class OracleToPostgresSync:
                 job_name=self.config.job.name,
                 mode=mode_override or self.config.sync.default_mode,
             )
-        workers = max(1, int(self.config.sync.parallel_workers or 1))
-        if workers == 1:
-            results = []
-            for table in tables:
-                results.append(
-                    self.sync_table(
-                        table,
-                        mode_override=mode_override,
-                        execute=execute,
-                        force=force,
-                        checkpoint_store=checkpoint_store,
-                        run_id=run_id,
-                        resume=resume,
-                        incremental=incremental,
-                        full_refresh=full_refresh,
-                    )
-                )
-            if checkpoint_store:
-                checkpoint_store.finish_run(
-                    run_id,
-                    status="failed" if any(result.status == "FAILED" for result in results) else "success",
-                )
-            return results
-
+        execution_context = SyncExecutionContext(self.config, self.logger)
+        table_order = {
+            self.config.resolve_table_name(name, strict=False): index
+            for index, name in enumerate(tables)
+        }
         results: list[SyncResult] = []
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                pool.submit(
-                    self.sync_table,
-                    table,
-                    mode_override=mode_override,
-                    execute=execute,
-                    force=force,
-                    checkpoint_store=checkpoint_store,
-                    run_id=run_id,
-                    resume=resume,
-                    incremental=incremental,
-                    full_refresh=full_refresh,
-                ): table
-                for table in tables
-            }
-            for future in as_completed(futures):
-                results.append(future.result())
-        results = sorted(results, key=lambda r: r.table_name)
+        try:
+            if execution_context.allow_table_parallelism(len(tables)):
+                worker_count = min(execution_context.workers, len(tables))
+                self.logger.info(
+                    "Parallel sync enabled dimension=tables workers=%s max_db_connections=%s",
+                    worker_count,
+                    execution_context.max_db_connections,
+                )
+                with ThreadPoolExecutor(max_workers=worker_count) as pool:
+                    futures = {
+                        pool.submit(
+                            self._sync_table_task,
+                            table,
+                            mode_override=mode_override,
+                            execute=execute,
+                            force=force,
+                            checkpoint_store=checkpoint_store,
+                            run_id=run_id,
+                            resume=resume,
+                            incremental=incremental,
+                            full_refresh=full_refresh,
+                            execution_context=execution_context,
+                            total_tables=len(tables),
+                        ): table
+                        for table in tables
+                    }
+                    for future in as_completed(futures):
+                        results.append(future.result())
+            else:
+                for table in tables:
+                    results.append(
+                        self._sync_table_task(
+                            table,
+                            mode_override=mode_override,
+                            execute=execute,
+                            force=force,
+                            checkpoint_store=checkpoint_store,
+                            run_id=run_id,
+                            resume=resume,
+                            incremental=incremental,
+                            full_refresh=full_refresh,
+                            execution_context=execution_context,
+                            total_tables=len(tables),
+                        )
+                    )
+        finally:
+            execution_context.close()
+        results = sorted(results, key=lambda r: table_order.get(r.table_name, len(table_order)))
         if checkpoint_store:
             checkpoint_store.finish_run(
                 run_id,
                 status="failed" if any(result.status == "FAILED" for result in results) else "success",
             )
         return results
+
+    def _sync_table_task(
+        self,
+        table_name: str,
+        *,
+        mode_override: str | None = None,
+        execute: bool = False,
+        force: bool = False,
+        checkpoint_store: CheckpointStore | None = None,
+        run_id: str | None = None,
+        resume: bool = False,
+        incremental: bool = False,
+        full_refresh: bool = False,
+        execution_context: SyncExecutionContext,
+        total_tables: int,
+    ) -> SyncResult:
+        worker_logger = execution_context.table_logger(
+            self.logger,
+            split_schema_table(table_name, self.config.postgres.schema).fqname,
+        )
+        worker_sync = OracleToPostgresSync(self.config, worker_logger)
+        return worker_sync.sync_table(
+            table_name,
+            mode_override=mode_override,
+            execute=execute,
+            force=force,
+            checkpoint_store=checkpoint_store,
+            run_id=run_id,
+            resume=resume,
+            incremental=incremental,
+            full_refresh=full_refresh,
+            execution_context=execution_context,
+            total_tables=total_tables,
+        )
 
     def sync_table(
         self,
@@ -247,7 +294,27 @@ class OracleToPostgresSync:
         resume: bool = False,
         incremental: bool = False,
         full_refresh: bool = False,
+        execution_context: SyncExecutionContext | None = None,
+        total_tables: int = 1,
     ) -> SyncResult:
+        if execution_context is None:
+            execution_context = DirectSyncExecutionContext(self.config, self.logger)
+            try:
+                return self.sync_table(
+                    table_name,
+                    mode_override=mode_override,
+                    execute=execute,
+                    force=force,
+                    checkpoint_store=checkpoint_store,
+                    run_id=run_id,
+                    resume=resume,
+                    incremental=incremental,
+                    full_refresh=full_refresh,
+                    execution_context=execution_context,
+                    total_tables=total_tables,
+                )
+            finally:
+                execution_context.close()
         started = time.time()
         table_cfg = self.config.table_config(table_name) or TableConfig(name=table_name)
         target_schema = table_cfg.target_schema or split_schema_table(table_cfg.name, self.config.postgres.schema).schema
@@ -264,6 +331,7 @@ class OracleToPostgresSync:
 
         run_id = run_id or new_run_id()
         result = SyncResult(table.fqname, mode, "PENDING", dry_run=dry_run, run_id=run_id)
+        result.worker_name = execution_context.worker_label()
         result.safe_mode = mode
         result.source_schema = table_cfg.source_schema or self.config.oracle.schema
         result.source_table = table_cfg.source_table or table.table
@@ -282,7 +350,7 @@ class OracleToPostgresSync:
         self.logger.info("Sync %s mode=%s dry_run=%s", table.fqname, mode, dry_run)
 
         try:
-            with oracle.connect(self.config.oracle) as ocon, postgres.connect(self.config.postgres) as pcon:
+            with execution_context.oracle_connection() as ocon, execution_context.postgres_connection() as pcon:
                 with ocon.cursor() as ocur, pcon.cursor() as pcur:
                     owner = result.source_schema
                     source_table = result.source_table
@@ -390,6 +458,8 @@ class OracleToPostgresSync:
                             chunks,
                             checkpoint_store=checkpoint_store,
                             run_id=run_id,
+                            execution_context=execution_context,
+                            total_tables=total_tables,
                         )
                         result.validation_stage = "staging_loaded"
                         result.staging_table = f"{load_result.staging_schema}.{load_result.staging_table}"
@@ -520,9 +590,13 @@ class OracleToPostgresSync:
                             source_table,
                             table.table,
                             mapping,
+                            chunks,
                             table_cfg.key_columns,
                             effective_where,
                             run_id=run_id,
+                            checkpoint_store=checkpoint_store,
+                            execution_context=execution_context,
+                            total_tables=total_tables,
                         )
                         result.validation_stage = "staging_loaded"
                         result.staging_table = f"{load_result.staging_schema}.{load_result.staging_table}"
@@ -592,6 +666,9 @@ class OracleToPostgresSync:
                             run_id=run_id,
                             resume_successful=successful,
                             metrics=load_result.metrics,
+                            execution_context=execution_context,
+                            mode=mode,
+                            total_tables=total_tables,
                         )
                         checksum_rows = self._validate_checksum(
                             ocur,
@@ -732,6 +809,8 @@ class OracleToPostgresSync:
         *,
         checkpoint_store: CheckpointStore | None,
         run_id: str,
+        execution_context: SyncExecutionContext,
+        total_tables: int,
     ) -> SafeLoadResult:
         postgres.set_local_timeouts(
             pcur,
@@ -760,6 +839,9 @@ class OracleToPostgresSync:
             run_id=run_id,
             resume_successful=set(),
             metrics=metrics,
+            execution_context=execution_context,
+            mode="truncate_safe",
+            total_tables=total_tables,
         )
         if self.config.sync.analyze_after_load:
             postgres.analyze_table(pcur, staging_schema, staging)
@@ -820,27 +902,55 @@ class OracleToPostgresSync:
         source_table: str,
         target_table: str,
         mapping: list[tuple[str, str | None]],
+        chunks: list[Chunk],
         key_columns: list[str],
         where: str | None,
         *,
         run_id: str,
+        checkpoint_store: CheckpointStore | None,
+        execution_context: SyncExecutionContext,
+        total_tables: int,
     ) -> SafeLoadResult:
         if not key_columns:
             raise ValueError(f"Mode upsert but key_columns is empty for {schema}.{target_table}")
         metrics = CopyMetrics()
         staging_schema, staging = create_staging_like(pcur, schema, target_table, run_id=run_id)
         self._cleanup_staging_retention(pcur, staging_schema, target_table)
-        rows = self._copy_oracle_to_pg(
-            ocur,
-            pcur,
-            owner,
-            staging_schema,
-            source_table,
-            staging,
-            mapping,
-            where,
-            metrics=metrics,
-        )
+        if execution_context.allow_chunk_parallelism(
+            mode="incremental_safe",
+            table_count=total_tables,
+            chunk_count=len(chunks),
+        ):
+            pcur.connection.commit()
+            rows = self._copy_chunks(
+                ocur,
+                pcur,
+                owner,
+                staging_schema,
+                source_table,
+                staging,
+                mapping,
+                chunks,
+                checkpoint_store=checkpoint_store,
+                run_id=run_id,
+                resume_successful=set(),
+                metrics=metrics,
+                execution_context=execution_context,
+                mode="incremental_safe",
+                total_tables=total_tables,
+            )
+        else:
+            rows = self._copy_oracle_to_pg(
+                ocur,
+                pcur,
+                owner,
+                staging_schema,
+                source_table,
+                staging,
+                mapping,
+                where,
+                metrics=metrics,
+            )
         pg_columns = [pg_col for pg_col, _ in mapping]
         key_set = {k.lower() for k in key_columns}
         update_columns = [c for c in pg_columns if c.lower() not in key_set]
@@ -989,7 +1099,28 @@ class OracleToPostgresSync:
         run_id: str,
         resume_successful: set[str],
         metrics: CopyMetrics | None = None,
+        execution_context: SyncExecutionContext,
+        mode: str,
+        total_tables: int,
     ) -> int:
+        if execution_context.allow_chunk_parallelism(
+            mode=mode,
+            table_count=total_tables,
+            chunk_count=len(chunks),
+        ):
+            return self._copy_chunks_parallel(
+                owner,
+                source_schema,
+                source_table,
+                target_table,
+                mapping,
+                chunks,
+                checkpoint_store=checkpoint_store,
+                run_id=run_id,
+                resume_successful=resume_successful,
+                metrics=metrics,
+                execution_context=execution_context,
+            )
         total = 0
         for chunk in chunks:
             if checkpoint_store:
@@ -1003,8 +1134,14 @@ class OracleToPostgresSync:
             if chunk.chunk_key in resume_successful:
                 self.logger.info("Skip successful checkpoint chunk %s %s", chunk.table_name, chunk.chunk_key)
                 continue
-            if checkpoint_store:
-                checkpoint_store.start_chunk(run_id, chunk.table_name, chunk.chunk_key)
+            if checkpoint_store and not checkpoint_store.claim_chunk(run_id, chunk.table_name, chunk.chunk_key):
+                self.logger.info(
+                    "Skip claimed checkpoint chunk %s %s status=%s",
+                    chunk.table_name,
+                    chunk.chunk_key,
+                    checkpoint_store.chunk_status(run_id, chunk.table_name, chunk.chunk_key),
+                )
+                continue
             try:
                 rows = self._copy_oracle_to_pg(
                     ocur,
@@ -1041,6 +1178,128 @@ class OracleToPostgresSync:
                     )
                 raise
         return total
+
+    def _copy_chunks_parallel(
+        self,
+        owner: str,
+        target_schema: str,
+        source_table: str,
+        target_table: str,
+        mapping: list[tuple[str, str | None]],
+        chunks: list[Chunk],
+        *,
+        checkpoint_store: CheckpointStore | None,
+        run_id: str,
+        resume_successful: set[str],
+        metrics: CopyMetrics | None,
+        execution_context: SyncExecutionContext,
+    ) -> int:
+        total = 0
+        worker_count = min(execution_context.workers, len(chunks))
+        self.logger.info("Parallel chunk copy enabled chunks=%s workers=%s", len(chunks), worker_count)
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures = {
+                pool.submit(
+                    self._copy_chunk_task,
+                    chunk,
+                    owner=owner,
+                    target_schema=target_schema,
+                    source_table=source_table,
+                    target_table=target_table,
+                    mapping=mapping,
+                    checkpoint_store=checkpoint_store,
+                    run_id=run_id,
+                    resume_successful=resume_successful,
+                    execution_context=execution_context,
+                ): chunk
+                for chunk in chunks
+            }
+            for future in as_completed(futures):
+                rows, chunk_metrics = future.result()
+                total += rows
+                _merge_copy_metrics(metrics, chunk_metrics)
+        return total
+
+    def _copy_chunk_task(
+        self,
+        chunk: Chunk,
+        *,
+        owner: str,
+        target_schema: str,
+        source_table: str,
+        target_table: str,
+        mapping: list[tuple[str, str | None]],
+        checkpoint_store: CheckpointStore | None,
+        run_id: str,
+        resume_successful: set[str],
+        execution_context: SyncExecutionContext,
+    ) -> tuple[int, CopyMetrics]:
+        chunk_logger = execution_context.table_logger(self.logger, chunk.table_name)
+        chunk_sync = OracleToPostgresSync(self.config, chunk_logger)
+        if checkpoint_store:
+            checkpoint_store.ensure_chunk(
+                run_id=run_id,
+                direction="oracle_to_postgres",
+                source_db=self.config.oracle.schema,
+                target_db=self.config.postgres.schema,
+                chunk=chunk,
+            )
+        if chunk.chunk_key in resume_successful:
+            chunk_logger.info("Skip successful checkpoint chunk %s %s", chunk.table_name, chunk.chunk_key)
+            return 0, CopyMetrics()
+        if checkpoint_store and not checkpoint_store.claim_chunk(run_id, chunk.table_name, chunk.chunk_key):
+            chunk_logger.info(
+                "Skip claimed checkpoint chunk %s %s status=%s",
+                chunk.table_name,
+                chunk.chunk_key,
+                checkpoint_store.chunk_status(run_id, chunk.table_name, chunk.chunk_key),
+            )
+            return 0, CopyMetrics()
+
+        metrics = CopyMetrics()
+        try:
+            with execution_context.oracle_connection() as ocon, execution_context.postgres_connection() as pcon:
+                with ocon.cursor() as ocur, pcon.cursor() as pcur:
+                    rows = chunk_sync._copy_oracle_to_pg(
+                        ocur,
+                        pcur,
+                        owner,
+                        target_schema,
+                        source_table,
+                        target_table,
+                        mapping,
+                        _chunk_where(chunk),
+                        metrics=metrics,
+                        table_name=chunk.table_name,
+                        chunk_key=chunk.chunk_key,
+                        key_columns=chunk.primary_key and [chunk.primary_key] or [],
+                    )
+                    pcon.commit()
+            if checkpoint_store:
+                checkpoint_store.finish_chunk(
+                    run_id,
+                    chunk.table_name,
+                    chunk.chunk_key,
+                    status="success",
+                    rows_attempted=rows,
+                    rows_success=rows,
+                )
+            return rows, metrics
+        except Exception as exc:
+            try:
+                if "pcon" in locals():
+                    pcon.rollback()
+            except Exception:
+                pass
+            if checkpoint_store:
+                checkpoint_store.finish_chunk(
+                    run_id,
+                    chunk.table_name,
+                    chunk.chunk_key,
+                    status="failed",
+                    error_message=str(exc),
+                )
+            raise
 
     def _truncate_resume_successful_chunks(
         self,
@@ -1499,6 +1758,21 @@ def _combine_where(left: str | None, right: str | None) -> str | None:
 
 def _chunk_where(chunk: Chunk) -> str | None:
     return chunk.where
+
+
+def _merge_copy_metrics(target: CopyMetrics | None, source: CopyMetrics) -> None:
+    if target is None:
+        return
+    target.rows_read += int(source.rows_read or 0)
+    target.rows_written += int(source.rows_written or 0)
+    target.rows_failed += int(source.rows_failed or 0)
+    target.rows_copied += int(source.rows_copied or 0)
+    target.bytes_processed += int(source.bytes_processed or 0)
+    target.lob_bytes_processed += int(source.lob_bytes_processed or 0)
+    if source.failed_row_samples:
+        if target.failed_row_samples is None:
+            target.failed_row_samples = []
+        target.failed_row_samples.extend(source.failed_row_samples)
 
 
 def _oracle_count_sql_summary(owner: str, table: str, where: str | None) -> str:

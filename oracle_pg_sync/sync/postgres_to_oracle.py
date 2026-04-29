@@ -13,6 +13,7 @@ from oracle_pg_sync.lob import apply_lob_mapping_policy, lob_summary_to_fields
 from oracle_pg_sync.metadata.compare import compare_table_metadata, inventory_has_fatal_mismatch
 from oracle_pg_sync.metadata.oracle_metadata import fetch_table_metadata as fetch_oracle_metadata
 from oracle_pg_sync.metadata.postgres_metadata import fetch_table_metadata as fetch_pg_metadata
+from oracle_pg_sync.sync.runtime import DirectSyncExecutionContext, SyncExecutionContext
 from oracle_pg_sync.utils.naming import split_schema_table
 from oracle_pg_sync.validation import checksum_columns, checksum_result_row, stable_cursor_hash
 
@@ -44,6 +45,7 @@ class ReverseSyncResult:
     lob_type: str = ""
     lob_target_type: str = ""
     lob_validation_mode: str = ""
+    worker_name: str = ""
 
     def as_row(self) -> dict[str, Any]:
         return {
@@ -72,6 +74,7 @@ class ReverseSyncResult:
             "lob_type": self.lob_type,
             "lob_target_type": self.lob_target_type,
             "lob_validation_mode": self.lob_validation_mode,
+            "worker_name": self.worker_name,
         }
 
 
@@ -101,49 +104,93 @@ class PostgresToOracleSync:
                 source_db=self.config.postgres.schema,
                 target_db=self.config.oracle.schema,
             )
-        workers = max(1, int(self.config.sync.parallel_workers or 1))
-        if workers == 1:
-            results = [
-                self.sync_table(
-                    table,
-                    mode_override=mode_override,
-                    execute=execute,
-                    force=force,
-                    checkpoint_store=checkpoint_store,
-                    run_id=run_id,
-                    resume=resume,
-                    incremental=incremental,
-                    full_refresh=full_refresh,
-                )
-                for table in tables
-            ]
-            if checkpoint_store:
-                checkpoint_store.finish_run(run_id, status="failed" if any(r.status == "FAILED" for r in results) else "success")
-            return results
-
+        execution_context = SyncExecutionContext(self.config, self.logger)
+        table_order = {
+            self.config.resolve_table_name(name, strict=False): index
+            for index, name in enumerate(tables)
+        }
         results: list[ReverseSyncResult] = []
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                pool.submit(
-                    self.sync_table,
-                    table,
-                    mode_override=mode_override,
-                    execute=execute,
-                    force=force,
-                    checkpoint_store=checkpoint_store,
-                    run_id=run_id,
-                    resume=resume,
-                    incremental=incremental,
-                    full_refresh=full_refresh,
-                ): table
-                for table in tables
-            }
-            for future in as_completed(futures):
-                results.append(future.result())
-        results = sorted(results, key=lambda r: r.table_name)
+        try:
+            if execution_context.allow_table_parallelism(len(tables)):
+                worker_count = min(execution_context.workers, len(tables))
+                self.logger.info(
+                    "Parallel reverse sync enabled dimension=tables workers=%s max_db_connections=%s",
+                    worker_count,
+                    execution_context.max_db_connections,
+                )
+                with ThreadPoolExecutor(max_workers=worker_count) as pool:
+                    futures = {
+                        pool.submit(
+                            self._sync_table_task,
+                            table,
+                            mode_override=mode_override,
+                            execute=execute,
+                            force=force,
+                            checkpoint_store=checkpoint_store,
+                            run_id=run_id,
+                            resume=resume,
+                            incremental=incremental,
+                            full_refresh=full_refresh,
+                            execution_context=execution_context,
+                        ): table
+                        for table in tables
+                    }
+                    for future in as_completed(futures):
+                        results.append(future.result())
+            else:
+                for table in tables:
+                    results.append(
+                        self._sync_table_task(
+                            table,
+                            mode_override=mode_override,
+                            execute=execute,
+                            force=force,
+                            checkpoint_store=checkpoint_store,
+                            run_id=run_id,
+                            resume=resume,
+                            incremental=incremental,
+                            full_refresh=full_refresh,
+                            execution_context=execution_context,
+                        )
+                    )
+        finally:
+            execution_context.close()
+        results = sorted(results, key=lambda r: table_order.get(r.table_name, len(table_order)))
         if checkpoint_store:
             checkpoint_store.finish_run(run_id, status="failed" if any(r.status == "FAILED" for r in results) else "success")
         return results
+
+    def _sync_table_task(
+        self,
+        table_name: str,
+        *,
+        mode_override: str | None = None,
+        execute: bool = False,
+        force: bool = False,
+        checkpoint_store: CheckpointStore | None = None,
+        run_id: str | None = None,
+        resume: bool = False,
+        incremental: bool = False,
+        full_refresh: bool = False,
+        execution_context: SyncExecutionContext,
+    ) -> ReverseSyncResult:
+        worker_logger = execution_context.table_logger(
+            self.logger,
+            split_schema_table(table_name, self.config.postgres.schema).fqname,
+        )
+        worker_sync = PostgresToOracleSync(self.config, worker_logger)
+        return worker_sync.sync_table(
+            table_name,
+            mode_override=mode_override,
+            execute=execute,
+            force=force,
+            checkpoint_store=checkpoint_store,
+            run_id=run_id,
+            resume=resume,
+            incremental=incremental,
+            full_refresh=full_refresh,
+            execution_context=execution_context,
+        )
 
     def sync_table(
         self,
@@ -157,7 +204,25 @@ class PostgresToOracleSync:
         resume: bool = False,
         incremental: bool = False,
         full_refresh: bool = False,
+        execution_context: SyncExecutionContext | None = None,
     ) -> ReverseSyncResult:
+        if execution_context is None:
+            execution_context = DirectSyncExecutionContext(self.config, self.logger)
+            try:
+                return self.sync_table(
+                    table_name,
+                    mode_override=mode_override,
+                    execute=execute,
+                    force=force,
+                    checkpoint_store=checkpoint_store,
+                    run_id=run_id,
+                    resume=resume,
+                    incremental=incremental,
+                    full_refresh=full_refresh,
+                    execution_context=execution_context,
+                )
+            finally:
+                execution_context.close()
         started = time.time()
         table = split_schema_table(table_name, self.config.postgres.schema)
         table_cfg = self.config.table_config(table_name) or TableConfig(name=table_name)
@@ -170,6 +235,7 @@ class PostgresToOracleSync:
         dry_run = not execute or self.config.sync.dry_run and not execute
         run_id = run_id or new_run_id()
         result = ReverseSyncResult(table.fqname, mode, "PENDING", dry_run=dry_run, run_id=run_id)
+        result.worker_name = execution_context.worker_label()
 
         self.logger.info("Reverse sync %s mode=%s dry_run=%s", table.fqname, mode, dry_run)
 
@@ -179,7 +245,7 @@ class PostgresToOracleSync:
                 result.message = "swap PostgreSQL -> Oracle tidak diaktifkan karena berisiko untuk grants/views/triggers"
                 return result
 
-            with oracle.connect(self.config.oracle) as ocon, postgres.connect(self.config.postgres) as pcon:
+            with execution_context.oracle_connection() as ocon, execution_context.postgres_connection() as pcon:
                 with ocon.cursor() as ocur, pcon.cursor() as pcur:
                     owner = self.config.oracle.schema
                     oracle_meta = fetch_oracle_metadata(
@@ -255,7 +321,10 @@ class PostgresToOracleSync:
                             result.status = "SKIPPED"
                             result.message = "checkpoint chunk full sudah success"
                             return result
-                        checkpoint_store.start_chunk(run_id, table.fqname, "full")
+                        if not checkpoint_store.claim_chunk(run_id, table.fqname, "full"):
+                            result.status = "SKIPPED"
+                            result.message = f"checkpoint chunk full status={checkpoint_store.chunk_status(run_id, table.fqname, 'full')}"
+                            return result
 
                     if mode == "truncate":
                         rows = self._sync_truncate(pcur, ocur, table.schema, table.table, owner, mapping, effective_where)

@@ -72,6 +72,21 @@ class PostgresConfig:
             "password": self.password,
         }
 
+    def conninfo_string(self) -> str:
+        values = self.conninfo()
+        try:
+            from psycopg.conninfo import make_conninfo
+
+            return make_conninfo(**values)
+        except Exception:
+            parts = []
+            for key, value in values.items():
+                if value is None:
+                    continue
+                text = str(value).replace("\\", "\\\\").replace("'", "\\'")
+                parts.append(f"{key}='{text}'")
+            return " ".join(parts)
+
 
 @dataclass
 class IncrementalConfig:
@@ -182,7 +197,12 @@ class SyncConfig:
     dry_run: bool = True
     fast_count: bool = True
     exact_count_after_load: bool = False
-    parallel_workers: int = 1
+    workers: int = 1
+    parallel_tables: bool = False
+    parallel_chunks: bool = False
+    max_db_connections: int | None = None
+    respect_dependencies: bool = False
+    parallel_workers: int | None = None
     batch_size: int = 10000
     chunk_size: int = 50000
     skip_on_structure_mismatch: bool = True
@@ -206,6 +226,16 @@ class SyncConfig:
     cooldown_minutes: int = 30
     skip_failed_rows: bool = False
     failed_row_sample_limit: int = 20
+
+    def __post_init__(self) -> None:
+        legacy_workers = int(self.parallel_workers or 0)
+        configured_workers = int(self.workers or 0)
+        if configured_workers <= 0 and legacy_workers > 0:
+            configured_workers = legacy_workers
+        self.workers = max(1, configured_workers or 1)
+        self.parallel_workers = self.workers
+        if self.max_db_connections is not None:
+            self.max_db_connections = max(1, int(self.max_db_connections))
 
 
 @dataclass
@@ -329,9 +359,7 @@ def load_environment(env_file: str | Path | None = None, *, config_path: Path | 
     try:
         from dotenv import load_dotenv
     except ModuleNotFoundError:
-        _LAST_ENV_FILE = Path(env_file) if env_file else None
-        _LAST_ENV_LOADED = False
-        return False
+        load_dotenv = None
 
     if env_file:
         path = Path(env_file)
@@ -339,7 +367,7 @@ def load_environment(env_file: str | Path | None = None, *, config_path: Path | 
             path = config_path.parent / path
         if not path.exists():
             raise RuntimeError(f"Environment file not found: {path}")
-        loaded = load_dotenv(path, override=False)
+        loaded = load_dotenv(path, override=False) if load_dotenv else _load_simple_dotenv(path)
         _LAST_ENV_FILE = path
         _LAST_ENV_LOADED = bool(loaded)
         return _LAST_ENV_LOADED
@@ -351,7 +379,7 @@ def load_environment(env_file: str | Path | None = None, *, config_path: Path | 
         _LAST_ENV_FILE = default_path
         _LAST_ENV_LOADED = False
         return False
-    loaded = load_dotenv(default_path, override=False)
+    loaded = load_dotenv(default_path, override=False) if load_dotenv else _load_simple_dotenv(default_path)
     _LAST_ENV_FILE = default_path
     _LAST_ENV_LOADED = bool(loaded)
     return _LAST_ENV_LOADED
@@ -361,6 +389,21 @@ def env_status() -> tuple[bool, str]:
     if _LAST_ENV_FILE:
         return _LAST_ENV_LOADED, str(_LAST_ENV_FILE)
     return _LAST_ENV_LOADED, ".env"
+
+
+def _load_simple_dotenv(path: Path) -> bool:
+    loaded = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text or text.startswith("#") or "=" not in text:
+            continue
+        key, value = text.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded = True
+    return loaded
 
 
 def _expand_env(value: Any) -> Any:

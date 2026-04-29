@@ -237,6 +237,57 @@ ops sync \
   --go
 ```
 
+## Parallel Sync
+
+Parallel sync uses shared PostgreSQL pooling plus worker-local Oracle connections so workers do not repeatedly reconnect or re-resolve DNS.
+
+CLI flags:
+
+- `--workers N`
+- `--parallel-tables`
+- `--parallel-chunks`
+- `--max-db-connections N`
+- `--respect-dependencies`
+
+Example, three tables in parallel:
+
+```bash
+ops sync \
+  --config config.yaml \
+  --direction oracle-to-postgres \
+  --tables A_HP_BATCH A_HP_BATCH_DETAIL ADDRESS \
+  --workers 4 \
+  --parallel-tables \
+  --max-db-connections 5 \
+  --mode truncate_safe \
+  --go
+```
+
+Recommended usage:
+
+- use `--parallel-tables` for independent tables and safe modes such as `truncate_safe`, `swap_safe`, or `incremental_safe`
+- use `--parallel-chunks` for a single large table in `append` or `incremental_safe`
+- keep `--max-db-connections` close to `--workers` unless you have validated spare DB capacity
+- use `--respect-dependencies` when table order matters more than throughput
+
+Safety rules:
+
+- `truncate_safe` and `swap_safe` still validate staging before cutover
+- watermark updates are still applied only after the run succeeds
+- checkpoint writes are atomic and chunk claiming prevents duplicate work on resume
+- when multiple tables are already running in parallel, chunk parallelism is disabled for that run to avoid over-committing DB connections
+
+Config example:
+
+```yaml
+sync:
+  workers: 1
+  parallel_tables: false
+  parallel_chunks: false
+  max_db_connections: 5
+  respect_dependencies: false
+```
+
 ## Incremental Sync, Watermarks, Resume
 
 Checkpoint and watermark commands:

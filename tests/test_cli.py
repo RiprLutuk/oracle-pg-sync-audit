@@ -99,6 +99,26 @@ tables:
         self.assertTrue(args.watermark_status)
         self.assertEqual(args.reset_watermark, "public.sample")
 
+    def test_sync_accepts_parallel_runtime_flags(self):
+        args = build_parser().parse_args(
+            [
+                "sync",
+                "--workers",
+                "4",
+                "--parallel-tables",
+                "--parallel-chunks",
+                "--max-db-connections",
+                "6",
+                "--respect-dependencies",
+            ]
+        )
+
+        self.assertEqual(args.workers, 4)
+        self.assertTrue(args.parallel_tables)
+        self.assertTrue(args.parallel_chunks)
+        self.assertEqual(args.max_db_connections, 6)
+        self.assertTrue(args.respect_dependencies)
+
     def test_sync_accepts_where_override(self):
         args = build_parser().parse_args(
             [

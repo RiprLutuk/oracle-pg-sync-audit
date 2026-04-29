@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--limit", type=int, help="Limit table count after table selection")
     audit.add_argument("--fast-count", action="store_true", help="Use statistic count")
     audit.add_argument("--exact-count", action="store_true", help="Use SELECT COUNT(1)")
-    audit.add_argument("--workers", type=int, default=1, help="Parallel audit workers. Default 1 agar ringan")
+    audit.add_argument("--workers", type=int, default=argparse.SUPPRESS, help="Parallel audit workers. Default dari config atau 1")
     audit.add_argument("--suggest-drop", action="store_true", help="Include DROP COLUMN suggestions for PG-only columns")
     audit.add_argument("--sql-out", help="Path output SQL suggestion. Default: current run dir/schema_suggestions.sql")
 
@@ -142,7 +142,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_production_sync_args(all_cmd)
     all_cmd.add_argument("--fast-count", action="store_true", help="Use statistic count")
     all_cmd.add_argument("--exact-count", action="store_true", help="Use SELECT COUNT(1)")
-    all_cmd.add_argument("--workers", type=int, default=1, help="Parallel audit workers. Default 1 agar ringan")
     all_cmd.add_argument("--suggest-drop", action="store_true", help="Include DROP COLUMN suggestions for PG-only columns")
     all_cmd.add_argument("--sql-out", help="Path output SQL suggestion. Default: current run dir/schema_suggestions.sql")
 
@@ -157,6 +156,11 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_production_sync_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profile", choices=["daily", "every_5min"], help="Apply DBA job defaults for daily or every_5min runs")
+    parser.add_argument("--workers", type=int, default=argparse.SUPPRESS, help="Parallel sync workers. Default dari config atau 1")
+    parser.add_argument("--parallel-tables", action="store_true", default=argparse.SUPPRESS, help="Enable per-table parallel sync workers")
+    parser.add_argument("--parallel-chunks", action="store_true", default=argparse.SUPPRESS, help="Enable chunk-level parallel execution for safe append/incremental loads")
+    parser.add_argument("--max-db-connections", type=int, default=argparse.SUPPRESS, help="Maximum PostgreSQL pooled connections for sync workers")
+    parser.add_argument("--respect-dependencies", action="store_true", default=argparse.SUPPRESS, help="Preserve configured table order and disable table parallelism for dependency-sensitive runs")
     parser.add_argument("--resume", metavar="RUN_ID", help="Resume sync run from checkpoint")
     parser.add_argument("--reset-checkpoint", metavar="RUN_ID", help="Delete checkpoint state for RUN_ID and exit")
     parser.add_argument("--list-runs", action="store_true", help="List checkpoint runs and exit")
@@ -230,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         config.sync.fast_count = True
 
     _apply_lob_override(config, getattr(args, "lob", None))
+    _apply_sync_runtime_overrides(args, config)
     if args.command == "audit" and args.all_postgres_tables:
         tables = _apply_limit(_discover_postgres_tables(config, logger), getattr(args, "limit", None))
     elif not tables and args.command == "audit":
@@ -271,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
             tables_requested=tables,
             checkpoint_path=str(checkpoint_store.path),
         )
-        audit_result = run_audit(config, tables, logger, workers=args.workers)
+        audit_result = run_audit(config, tables, logger, workers=getattr(args, "workers", 1))
         run_dir = manifest.run_dir
         write_audit_reports(
             run_dir,
@@ -632,7 +637,7 @@ def main(argv: list[str] | None = None) -> int:
         run_dir = manifest.run_dir
         run_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Step 1/3 audit awal")
-        pre_audit_result = run_audit(config, tables, logger, workers=args.workers)
+        pre_audit_result = run_audit(config, tables, logger, workers=getattr(args, "workers", 1))
         write_csv(run_dir / "pre_inventory_summary.csv", pre_audit_result.inventory_rows)
         write_csv(run_dir / "pre_column_diff.csv", pre_audit_result.column_diff_rows)
         write_csv(run_dir / "pre_type_mismatch.csv", pre_audit_result.type_mismatch_rows)
@@ -697,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
         metrics_rows = _metrics_rows(sync_results, rollback_rows)
         _write_metrics_json(run_dir, metrics_rows)
         logger.info("Step 3/3 audit ulang dan report")
-        audit_result = run_audit(config, tables, logger, workers=args.workers)
+        audit_result = run_audit(config, tables, logger, workers=getattr(args, "workers", 1))
         write_audit_reports(
             run_dir,
             inventory_rows=audit_result.inventory_rows,
@@ -1137,6 +1142,20 @@ def _apply_runtime_table_overrides(args: argparse.Namespace, config: AppConfig, 
             table_cfg.incremental.overlap_minutes = int(args.overlap_minutes)
 
 
+def _apply_sync_runtime_overrides(args: argparse.Namespace, config: AppConfig) -> None:
+    if hasattr(args, "workers"):
+        config.sync.workers = max(1, int(args.workers))
+        config.sync.parallel_workers = config.sync.workers
+    if hasattr(args, "parallel_tables"):
+        config.sync.parallel_tables = bool(args.parallel_tables)
+    if hasattr(args, "parallel_chunks"):
+        config.sync.parallel_chunks = bool(args.parallel_chunks)
+    if hasattr(args, "max_db_connections"):
+        config.sync.max_db_connections = max(1, int(args.max_db_connections))
+    if hasattr(args, "respect_dependencies"):
+        config.sync.respect_dependencies = bool(args.respect_dependencies)
+
+
 def _single_table_config(config: AppConfig, tables: list[str], flag_name: str) -> TableConfig:
     if len(tables) != 1:
         raise SystemExit(f"{flag_name} hanya boleh dipakai untuk satu table per command.")
@@ -1449,6 +1468,7 @@ def _metrics_rows(results: list[Any], rollback_rows: list[dict] | None = None) -
                 "error_rate": 1.0 if getattr(result, "status", "") == "FAILED" else 0.0,
                 "rollback_available": bool(getattr(result, "rollback_available", False)),
                 "rollback_action": getattr(result, "rollback_action", ""),
+                "worker_name": getattr(result, "worker_name", ""),
             }
         )
     if rollback_rows:
@@ -1472,8 +1492,37 @@ def _metrics_rows(results: list[Any], rollback_rows: list[dict] | None = None) -
 
 
 def _write_metrics_json(run_dir: Path, metrics_rows: list[dict]) -> None:
+    table_rows = [row for row in metrics_rows if row.get("table_name") != "__rollback__"]
+    elapsed_values = [float(row.get("elapsed_seconds") or 0) for row in table_rows]
+    slowest_table = max(table_rows, key=lambda row: float(row.get("elapsed_seconds") or 0), default={})
+    throughput_per_worker: dict[str, dict[str, float]] = {}
+    for row in table_rows:
+        worker_name = str(row.get("worker_name") or "")
+        if not worker_name:
+            continue
+        current = throughput_per_worker.setdefault(worker_name, {"rows_loaded": 0.0, "elapsed_seconds": 0.0})
+        current["rows_loaded"] += float(row.get("rows_loaded") or 0)
+        current["elapsed_seconds"] += float(row.get("elapsed_seconds") or 0)
+    for worker_name, payload in throughput_per_worker.items():
+        elapsed = payload["elapsed_seconds"]
+        payload["rows_per_second"] = round(payload["rows_loaded"] / elapsed, 3) if elapsed > 0 else 0.0
+        payload["worker_name"] = worker_name
     payload = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "summary": {
+            "total_parallel_workers": len(throughput_per_worker),
+            "avg_table_duration": round(sum(elapsed_values) / len(elapsed_values), 3) if elapsed_values else 0.0,
+            "slowest_table": {
+                "table_name": slowest_table.get("table_name", ""),
+                "elapsed_seconds": float(slowest_table.get("elapsed_seconds") or 0),
+            },
+            "throughput_per_worker": sorted(throughput_per_worker.values(), key=lambda row: row["worker_name"]),
+            "result_summary": {
+                "success_tables": [row.get("table_name") for row in table_rows if row.get("status") == "SUCCESS"],
+                "failed_tables": [row.get("table_name") for row in table_rows if row.get("status") == "FAILED"],
+                "skipped_tables": [row.get("table_name") for row in table_rows if row.get("status") in {"SKIPPED", "DRY_RUN"}],
+            },
+        },
         "tables": metrics_rows,
         "slow_tables": [row for row in metrics_rows if float(row.get("elapsed_seconds") or 0) >= 300],
     }
