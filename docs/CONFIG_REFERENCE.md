@@ -1,94 +1,21 @@
 # Configuration Reference
 
-Project memakai dua sumber config:
+## Layout
 
-- `.env` untuk secret dan koneksi.
-- `config.yaml` untuk opsi runtime, daftar table, mode sync, rename mapping, dan output report.
+The runtime model has two layers:
 
-## .env
+- `.env` for secrets and environment-specific connection values
+- `config.yaml` for behavior, table scope, validation, LOB policy, and reporting
 
-`ORACLE_DSN`
+The loader supports `${ENV_NAME}` and `${ENV_NAME:-default}` placeholders.
 
-- DSN Oracle lengkap.
-- Jika diisi, field host/port/service/sid tidak dipakai untuk membuat DSN.
-- Contoh: `oracle-host.example.com:1521/ORCLPDB1`.
+## Root Keys
 
-`ORACLE_HOST`
+### `env_file`
 
-- Host atau IP Oracle.
-- Dipakai jika `ORACLE_DSN` kosong.
+Optional dotenv file loaded before config expansion.
 
-`ORACLE_PORT`
-
-- Port listener Oracle.
-- Umumnya `1521`.
-
-`ORACLE_SERVICE_NAME`
-
-- Service name Oracle.
-- Gunakan ini untuk PDB/service modern.
-
-`ORACLE_SID`
-
-- SID Oracle.
-- Isi salah satu antara `ORACLE_SERVICE_NAME` atau `ORACLE_SID`.
-
-`ORACLE_USER`
-
-- User Oracle untuk membaca metadata dan data.
-
-`ORACLE_PASSWORD`
-
-- Password Oracle.
-
-`ORACLE_SCHEMA`
-
-- Owner schema Oracle sumber.
-- Contoh: `APP_SCHEMA`.
-
-`ORACLE_CLIENT_LIB_DIR`
-
-- Path Oracle Instant Client jika memakai thick mode.
-- Contoh: `/opt/oracle/instantclient_23_9`.
-
-`PG_HOST`
-
-- Host atau IP PostgreSQL.
-
-`PG_PORT`
-
-- Port PostgreSQL.
-- Umumnya `5432`.
-
-`PG_DATABASE`
-
-- Database target PostgreSQL.
-
-`PG_USER`
-
-- User PostgreSQL untuk audit dan sync.
-
-`PG_PASSWORD`
-
-- Password PostgreSQL.
-
-`PG_SCHEMA`
-
-- Schema default PostgreSQL.
-- Default: `public`.
-
-## config.yaml Root
-
-`env_file`
-
-- File env yang diload sebelum placeholder `${...}` dibaca.
-- Default contoh: `.env`.
-
-```yaml
-env_file: .env
-```
-
-## oracle
+### `oracle`
 
 ```yaml
 oracle:
@@ -103,9 +30,9 @@ oracle:
   client_lib_dir: ${ORACLE_CLIENT_LIB_DIR}
 ```
 
-Gunakan placeholder agar password tidak hardcode.
+Use `dsn` directly or let the tool build a DSN from host/port plus service or SID.
 
-## postgres
+### `postgres`
 
 ```yaml
 postgres:
@@ -117,239 +44,84 @@ postgres:
   schema: ${PG_SCHEMA:-public}
 ```
 
-Syntax `${PG_SCHEMA:-public}` berarti kalau env kosong, pakai `public`.
+### `sync`
 
-## sync
+Important fields:
 
-`default_mode`
+- `default_direction`: `oracle-to-postgres` or `postgres-to-oracle`
+- `default_mode`: `truncate`, `swap`, `append`, `upsert`, or `delete`
+- `dry_run`: keep `true` in production configs; execution still requires `--go`
+- `fast_count`: use metadata/statistics counts during audit
+- `exact_count_after_load`: perform post-load exact rowcount verification
+- `parallel_workers`
+- `batch_size`
+- `chunk_size`
+- `skip_on_structure_mismatch`
+- `build_indexes_on_staging`
+- `analyze_after_load`
+- `truncate_cascade`
+- `allow_swap`
+- `max_swap_table_bytes`
+- `swap_space_multiplier`
+- `keep_old_after_swap`
+- `copy_null`
+- `pg_lock_timeout`
+- `pg_statement_timeout`
+- `checkpoint_dir`
+- `truncate_resume_strategy`
+- `staging_schema`
 
-- Mode default jika table tidak punya mode.
-- Nilai: `truncate`, `swap`, `append`, `upsert`.
-- Default project: `truncate`, supaya object existing tetap aman dan tidak membuat staging table besar.
+Current checkpoint storage is SQLite and lives under `sync.checkpoint_dir`.
 
-`default_direction`
-
-- Arah sync default.
-- Nilai: `oracle-to-postgres` atau `postgres-to-oracle`.
-- Default: `oracle-to-postgres`.
-
-`dry_run`
-
-- Default harus `true`.
-- Command sync tetap tidak mengubah data tanpa `--execute`.
-
-`fast_count`
-
-- `true`: memakai statistik database.
-- `false`: memakai exact count.
-- Fast count lebih ringan tapi bisa tidak real-time.
-
-`exact_count_after_load`
-
-- Setelah sync, hitung exact count Oracle dan PostgreSQL.
-- Bisa berat untuk table besar.
-- Default `false` agar tidak memberatkan server. Pakai `--exact-count` saat audit/verifikasi terjadwal.
-
-`parallel_workers`
-
-- Jumlah table yang diproses paralel.
-- Default `1` agar tidak memberatkan Oracle/PostgreSQL/client.
-
-`batch_size`
-
-- Ukuran batch konseptual untuk fetch/load.
-- Saat ini loader utama memakai cursor iterator dan PostgreSQL COPY.
-
-`chunk_size`
-
-- Disiapkan untuk pengembangan chunking big table.
-
-`skip_on_structure_mismatch`
-
-- Guard agar table mismatch di-skip.
-- Behavior utama juga dikontrol oleh `--force`.
-
-`build_indexes_on_staging`
-
-- Disiapkan untuk optimasi index staging.
-- Saat ini staging dibuat `LIKE INCLUDING ALL`.
-
-`analyze_after_load`
-
-- Jalankan `ANALYZE` setelah load.
-
-`truncate_cascade`
-
-- Jika `true`, truncate memakai `CASCADE`.
-- Jangan aktifkan tanpa approval DBA.
-
-`allow_swap`
-
-- Default `false`.
-- Jika `false`, execute mode `swap` akan di-skip kecuali command memakai `--force`.
-- Ini guard untuk RDS karena `swap` membuat staging table, index staging, WAL/temp, dan old table selama transaksi.
-
-`max_swap_table_bytes`
-
-- Batas ukuran table PostgreSQL untuk mode `swap`.
-- Bisa angka byte atau string seperti `20GiB`.
-- Jika ukuran table melewati batas, mode `swap` di-skip kecuali memakai `--force`.
-
-`swap_space_multiplier`
-
-- Multiplier estimasi storage ekstra untuk dry-run/log swap.
-- Default `2.5`, karena staging table plus index/WAL/temp bisa lebih besar dari data heap saja.
-
-`keep_old_after_swap`
-
-- Jika `true`, table lama hasil swap tidak langsung dihapus.
-- Rekomendasi default: `false` agar storage RDS cepat balik setelah swap.
-- Jika butuh rollback cepat via old table, aktifkan hanya saat free storage cukup.
-
-`copy_null`
-
-- Placeholder untuk format null COPY.
-
-## dependency
-
-`auto_recompile_oracle`
-
-- Jika `true`, execute sync menjalankan compile invalid object Oracle setelah load.
-
-`refresh_postgres_mview`
-
-- Jika `true`, execute sync menjalankan refresh materialized view PostgreSQL
-  yang terdeteksi dependent.
-
-`max_recompile_attempts`
-
-- Batas loop compile invalid object Oracle.
-- Default `3`.
-
-`fail_on_broken_dependency`
-
-- Jika `true`, run execute keluar non-zero bila dependency critical masih
-  broken, invalid, missing, atau failed setelah dependency lifecycle.
-
-`pg_lock_timeout`
-
-- PostgreSQL lock timeout untuk action yang butuh lock, terutama `truncate`.
-- Default `5s`.
-- Jika table sedang dipakai dan lock tidak didapat, proses gagal cepat.
-
-`pg_statement_timeout`
-
-- PostgreSQL statement timeout.
-- Default `0`, artinya tidak dibatasi.
-
-`checkpoint_dir`
-
-- Lokasi SQLite checkpoint.
-- Default: `reports/checkpoints/checkpoint.sqlite3`.
-
-Contoh:
+### `reports`
 
 ```yaml
-sync:
-  default_direction: oracle-to-postgres
-  default_mode: truncate
-  dry_run: true
-  fast_count: true
-  exact_count_after_load: false
-  parallel_workers: 1
-  truncate_cascade: false
-  allow_swap: false
-  max_swap_table_bytes: 20GiB
-  swap_space_multiplier: 2.5
-  keep_old_after_swap: false
-  pg_lock_timeout: 5s
-  pg_statement_timeout: '0'
-  checkpoint_dir: reports/checkpoints/checkpoint.sqlite3
+reports:
+  output_dir: reports
 ```
 
-## Table List dan Runtime Override
-
-Untuk production yang mudah dibaca, table list bisa dibuat simple:
+### `dependency`
 
 ```yaml
-tables_file: configs/tables.yaml
+dependency:
+  auto_recompile_oracle: true
+  refresh_postgres_mview: true
+  max_recompile_attempts: 3
+  fail_on_broken_dependency: true
 ```
+
+### `job`
 
 ```yaml
-# configs/tables.yaml
-tables:
-  - public.address
-  - public.housemaster
-  - public.a_hp_house_info
+job:
+  retry: 3
+  timeout_seconds: 3600
+  alert_command: echo FAILED
 ```
 
-Detail yang berubah per job, terutama PostgreSQL ke Oracle, bisa diisi di command:
+These fields are part of the config model and show up in sanitized run reports. The shell wrappers under `jobs/` currently read their runtime values from environment variables such as `RETRY`, `TIMEOUT_SECONDS`, and `ALERT_COMMAND`.
 
-```bash
-ops sync \
-  --direction postgres-to-oracle \
-  --tables public.address \
-  --mode upsert \
-  --key-columns address_id \
-  --incremental-column last_update \
-  --where "last_update >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'" \
-  --incremental \
-  --go
-```
-
-## Incremental, Checksum, dan LOB
-
-Table-level incremental tetap didukung jika ingin disimpan di YAML:
-
-```yaml
-tables:
-  - name: public.sample_customer
-    key_columns: [customer_id]
-    incremental:
-      enabled: true
-      strategy: updated_at
-      column: updated_at
-      initial_value: null
-      overlap_minutes: 10
-      delete_detection: false
-```
-
-`strategy` dapat berisi `updated_at`, `numeric_key`, atau `oracle_scn`.
-`oracle_scn` saat ini akan gagal dengan pesan jelas karena Flashback/SCN belum diaktifkan.
-
-Table list sebaiknya hanya di satu tempat. Untuk production, gunakan:
-
-```yaml
-tables_file: configs/tables.yaml
-```
-
-Jangan isi `tables:` inline bersamaan dengan `tables_file`; loader akan menolak kombinasi itu agar tidak ada dua sumber table yang berbeda.
-
-File contoh table list ada di:
-
-```text
-configs/tables.example.yaml
-```
-
-Contoh default dibuat simple. Field lanjutan seperti `where`, `key_columns`,
-`incremental`, checksum chunk, dan `lob_strategy` tetap valid jika memang ingin
-disimpan di YAML.
-
-Checksum validation:
+### `validation.checksum`
 
 ```yaml
 validation:
   checksum:
     enabled: true
-    mode: chunk
-    batch_size: 5000
+    mode: table
     columns: auto
-    exclude_columns:
-      - BLOB_PAYLOAD
+    exclude_columns: []
+    batch_size: 5000
+    chunk_key: null
     sample_percent: 1
 ```
 
-LOB strategy:
+Behavior:
+
+- checksum reads rows in batches
+- default `columns: auto` excludes LOB columns
+- output goes to `validation_checksum.csv` and report sheets when enabled
+
+### `lob_strategy`
 
 ```yaml
 lob_strategy:
@@ -361,47 +133,29 @@ lob_strategy:
     hash_algorithm: sha256
   warn_on_lob_larger_than_mb: 50
   fail_on_lob_larger_than_mb: null
-
-tables:
-  - name: public.sample_blob_table
-    lob_strategy:
-      columns:
-        BLOB_PAYLOAD:
-          strategy: stream
-          target_type: bytea
-          validation: size_hash
-        JSON_DATA:
-          strategy: stream
-          target_type: text
-          validation: size_hash
+  columns:
+    public.address.payload:
+      strategy: stream
+      target_type: bytea
+      validation: size_hash
 ```
 
-Pilihan LOB: `skip`, `null`, `stream`, `include`, `error`.
+Supported strategies:
 
-Tipe Oracle LOB yang didukung:
+- `error`
+- `skip`
+- `null`
+- `stream`
+- `include` -> normalized to `stream`
 
-- `BLOB` -> PostgreSQL `bytea`
-- `CLOB` dan `NCLOB` -> PostgreSQL `text`
-- `LONG` -> PostgreSQL `text` jika driver/table mengizinkan pembacaan
-- `LONG RAW` -> PostgreSQL `bytea` jika driver/table mengizinkan pembacaan
+LOB target mapping:
 
-Default tetap aman: `error`. Nilai LOB mentah tidak ditulis ke log/report/manifest.
+- `BLOB`, `LONG RAW` -> `bytea`
+- `CLOB`, `NCLOB`, `LONG` -> `text`
 
-## reports
+### `rename_columns`
 
-`output_dir`
-
-- Folder output report.
-- Default: `reports`.
-
-```yaml
-reports:
-  output_dir: reports
-```
-
-## rename_columns
-
-Mapping kolom Oracle ke kolom PostgreSQL.
+Map Oracle column names to PostgreSQL column names for diff and sync alignment.
 
 ```yaml
 rename_columns:
@@ -409,97 +163,136 @@ rename_columns:
     legacy_status: status
 ```
 
-Aturan:
+### `tables` and `tables_file`
 
-- Key table harus lowercase atau case-insensitive equivalent.
-- Kolom kiri adalah Oracle.
-- Kolom kanan adalah PostgreSQL.
-- Dipakai oleh audit dan sync.
+Use one or the other.
 
-## tables
+Simple external table file:
 
 ```yaml
 tables:
-  - name: public.sample_order
-    oracle_to_postgres_mode: truncate
-    postgres_to_oracle_mode: truncate
+  - name: public.address
     directions: [oracle-to-postgres, postgres-to-oracle]
-    key_columns: [order_id]
-    where: "UPDATED_AT >= SYSDATE - 1"
+    oracle_to_postgres_mode: truncate
+    postgres_to_oracle_mode: upsert
+    key_columns: [address_id]
 ```
 
-`name`
+## Table-Level Keys
 
-- Nama table target.
-- Bisa `schema.table` atau `table`.
+Supported table config keys:
 
-`mode`
+- `name`
+- `source_schema`
+- `source_table`
+- `target_schema`
+- `target_table`
+- `mode`
+- `oracle_to_postgres_mode`
+- `postgres_to_oracle_mode`
+- `directions`
+- `key_columns`
+- `primary_key`
+- `where`
+- `incremental`
+- `validation`
+- `lob_strategy`
 
-- Override mode generic untuk table itu.
-- Dipertahankan untuk config sederhana/backward compatible.
-- Jika ada mode per arah, field per arah lebih diprioritaskan.
-
-`oracle_to_postgres_mode`
-
-- Mode khusus saat `--direction oracle-to-postgres`.
-- Nilai: `truncate`, `swap`, `append`, `upsert`.
-- Default table memakai `truncate` untuk menghindari staging table besar dan menjaga dependency object existing.
-
-`postgres_to_oracle_mode`
-
-- Mode khusus saat `--direction postgres-to-oracle`.
-- Nilai: `truncate`, `append`, `delete`, `upsert`.
-- Mode `swap` tidak diaktifkan untuk Oracle target.
-
-`directions`
-
-- Arah sync yang valid untuk table tersebut.
-- Jika command sync tidak diberi `--tables`, CLI hanya mengambil table yang memiliki direction sesuai.
-- Contoh: `[oracle-to-postgres]`, `[postgres-to-oracle]`, atau keduanya.
-
-`key_columns`
-
-- Wajib untuk `upsert`.
-- Harus sesuai unique index/constraint di PostgreSQL.
-- Untuk PostgreSQL ke Oracle, key dipakai oleh Oracle `MERGE`.
-- Bisa diisi runtime dengan `--key-columns col1 col2`.
-
-`where`
-
-- Filter query Oracle.
-- Ditambahkan langsung setelah `WHERE`.
-- Pastikan aman dan valid untuk Oracle SQL.
-- Bisa diisi runtime dengan `--where`, hanya untuk satu table per command.
-
-## Contoh Config Development
+### Incremental Config
 
 ```yaml
+incremental:
+  enabled: true
+  strategy: updated_at
+  column: last_update
+  initial_value: 2026-01-01T00:00:00
+  overlap_minutes: 5
+  delete_detection: false
+```
+
+Supported strategies:
+
+- `updated_at`
+- `numeric_key`
+
+## Smart Schema Diff Semantics
+
+There is no separate diff config block today. Behavior is code-defined and report-visible.
+
+Compatibility status:
+
+- `compatible_exact`
+- `compatible`
+- `compatible_with_warning`
+- `incompatible`
+
+Severity:
+
+- `OK`
+- `INFO`
+- `WARNING`
+- `ERROR`
+
+Current high-value rules:
+
+- ordinal-only drift -> `INFO`
+- `NUMBER(38,0)` vs `numeric(38,0)` -> compatible
+- `VARCHAR2` vs `varchar` -> compatible
+- Oracle `DATE` vs PostgreSQL `timestamp` -> `INFO`
+- narrower PostgreSQL target type -> `ERROR`
+- missing column -> `ERROR`
+
+`INFO` rows do not make the dashboard count a table as mismatched.
+
+## Type Mapping Summary
+
+Oracle to PostgreSQL guidance used in suggestions:
+
+- `VARCHAR2` / `NVARCHAR2` -> `varchar(n)` or `text`
+- `CHAR` / `NCHAR` -> `char(n)`
+- `NUMBER(p,0)` -> `smallint` / `integer` / `bigint` / `numeric`
+- `NUMBER(p,s)` -> `numeric(p,s)`
+- `DATE` / `TIMESTAMP` -> `timestamp`
+- `INTERVAL ...` -> `interval`
+- `RAW` / `BLOB` / `LONG RAW` -> `bytea`
+- `CLOB` / `NCLOB` / `LONG` -> `text`
+- `JSON` -> `jsonb`
+- `XMLTYPE` -> `text`
+
+## Example Production Skeleton
+
+```yaml
+env_file: .env
+
+oracle:
+  dsn: ${ORACLE_DSN}
+  user: ${ORACLE_USER}
+  password: ${ORACLE_PASSWORD}
+  schema: ${ORACLE_SCHEMA}
+
+postgres:
+  host: ${PG_HOST}
+  port: ${PG_PORT}
+  database: ${PG_DATABASE}
+  user: ${PG_USER}
+  password: ${PG_PASSWORD}
+  schema: ${PG_SCHEMA:-public}
+
 sync:
   default_direction: oracle-to-postgres
   default_mode: truncate
   dry_run: true
   fast_count: true
-  exact_count_after_load: false
-  parallel_workers: 1
-  allow_swap: false
-  keep_old_after_swap: false
-```
+  checkpoint_dir: reports/checkpoints/checkpoint.sqlite3
 
-## Contoh Config Production
+dependency:
+  auto_recompile_oracle: true
+  refresh_postgres_mview: true
+  max_recompile_attempts: 3
+  fail_on_broken_dependency: true
 
-```yaml
-sync:
-  default_direction: oracle-to-postgres
-  default_mode: truncate
-  dry_run: true
-  fast_count: true
-  exact_count_after_load: false
-  parallel_workers: 1
-  analyze_after_load: true
-  truncate_cascade: false
-  allow_swap: false
-  max_swap_table_bytes: 20GiB
-  swap_space_multiplier: 2.5
-  keep_old_after_swap: false
-  pg_lock_timeout: 5s
+lob_strategy:
+  default: error
+
+tables_file: configs/tables.yaml
 ```

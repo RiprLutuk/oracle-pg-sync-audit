@@ -1,302 +1,172 @@
 # Production Runbook
 
-Gunakan runbook ini saat menjalankan audit dan sync di environment production.
+## 1. Prepare The Host
 
-Runbook ini berlaku untuk dua arah:
+1. Install Python 3.11+.
+2. Install Oracle client libraries if thick mode is required.
+3. Create `.venv` and install `pip install -e ".[dev]"`.
+4. Place `.env`, `config.yaml`, and `configs/tables.yaml` outside source control if possible.
+5. Confirm the service account can reach both databases.
 
-- `oracle-to-postgres`
-- `postgres-to-oracle`
+## 2. Validate Before First Execute
 
-## Prinsip Safety
-
-- Jangan jalankan sync production tanpa `audit` terlebih dahulu.
-- Jangan pakai `--execute` sebelum dry-run sukses.
-- Jangan pakai `--force` kecuali mismatch sudah direview.
-- Jangan aktifkan `truncate_cascade` tanpa approval DBA.
-- Default sync memakai `truncate`, bukan `swap`, agar tidak membuat staging table besar dan object dependency tetap menempel.
-- Jalankan table besar di maintenance window.
-- Pastikan backup atau restore point tersedia.
-
-## Checklist Sebelum Run
-
-- `.env` menunjuk ke Oracle dan PostgreSQL production yang benar.
-- `config.yaml` berisi table target yang benar.
-- `reports.output_dir` diarahkan ke folder run saat ini jika perlu arsip.
-- User PostgreSQL punya privilege `CREATE`, `TRUNCATE`, `INSERT`, `UPDATE`, `ANALYZE`.
-- Disk PostgreSQL cukup untuk staging dan old table.
-- Tidak ada job lain yang menulis besar ke table target.
-- Aplikasi downstream sudah tahu window sync.
-
-## Step 1. Validasi Config
+Run:
 
 ```bash
-python -m oracle_pg_sync --help
-python -m oracle_pg_sync audit --help
+ops doctor --config config.yaml
+ops audit --config config.yaml
+ops analyze lob --config config.yaml
+ops dependencies check --config config.yaml
 ```
 
-Cek table list di `config.yaml`.
+Review:
 
-Table list bawaan sudah dimigrasikan dari:
+- `report.html`
+- `report.xlsx`
+- schema diff `ERROR` rows
+- dependency `broken_count`
+- LOB-heavy recommendations
 
-- `example/ora2pg.py` untuk `oracle-to-postgres`.
-- `example/pg2ora.py` untuk `postgres-to-oracle`.
+Do not start execute mode until the audit is clean or the exceptions are understood.
 
-Jika menjalankan sync tanpa `--tables`, CLI akan memilih table berdasarkan field `directions`.
+## 3. First Oracle -> PostgreSQL Execute
 
-## Step 2. Audit Awal
-
-Untuk banyak table atau table besar:
+1. Dry-run:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --fast-count
+ops sync --config config.yaml --direction oracle-to-postgres
 ```
 
-Untuk compare semua table yang ditemukan di PostgreSQL schema, tanpa bergantung ke `tables.yaml`:
+2. Execute:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --all-postgres-tables --fast-count
-python -m oracle_pg_sync audit --config config.yaml --all-postgres-tables --limit 10 --fast-count
+ops sync --config config.yaml --direction oracle-to-postgres --go
 ```
 
-Untuk subset:
+3. Review:
+
+- `sync_result.csv`
+- `dependency_summary.csv`
+- `validation_checksum.csv` if enabled
+
+## 4. First PostgreSQL -> Oracle Execute
+
+Prefer `upsert` with keys for reverse sync.
+
+1. Dry-run:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --tables sample_customer sample_order --fast-count
+ops sync --config config.yaml --direction postgres-to-oracle --mode upsert
 ```
 
-Jika config tidak berisi table list, audit akan mengambil semua table dari
-PostgreSQL schema. Untuk production, lebih aman tetap pakai table list eksplisit
-atau `--tables` agar scope jelas.
-
-SQL suggestion dibuat otomatis di:
-
-```text
-reports/run_<timestamp>_<run_id>/schema_suggestions.sql
-```
-
-File ini hanya bahan review DBA. Pakai `--suggest-drop` hanya kalau kolom ekstra di PostgreSQL memang sudah disetujui untuk dihapus.
-
-Buka:
-
-```text
-reports/run_<timestamp>_<run_id>/report.html
-reports/run_<timestamp>_<run_id>/inventory_summary.csv
-reports/run_<timestamp>_<run_id>/column_diff.csv
-reports/run_<timestamp>_<run_id>/type_mismatch.csv
-reports/run_<timestamp>_<run_id>/schema_suggestions.sql
-```
-
-Stop jika ada:
-
-- `MISSING`
-- `MISMATCH`
-- missing columns
-- extra columns yang belum disetujui
-- type mismatch fatal
-
-## Step 3. Dry-Run Sync
+2. Execute:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres
+ops sync --config config.yaml --direction postgres-to-oracle --mode upsert --go
 ```
 
-Atau table tertentu:
+3. Confirm:
+
+- `status` is `SUCCESS` or an expected `WARNING`
+- no checksum mismatch
+- no critical dependency failures after the run
+
+## 5. Daily Operations
+
+Recommended operator commands:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer
+ops status --config config.yaml
+ops report latest --config config.yaml
+ops dependencies check --config config.yaml
 ```
 
-Atau table list lokal terpisah:
+Use the run folder as the unit of investigation. Do not mix files from different run directories.
+
+## 6. Cron Deployment
+
+Full refresh:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables-file configs/tables.yaml
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables-file configs/tables.yaml --limit 10
+jobs/daily.sh oracle_to_pg
+jobs/daily.sh pg_to_oracle
 ```
 
-Untuk reverse sync PostgreSQL ke Oracle:
+Incremental:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate
+jobs/incremental.sh oracle_to_pg
+jobs/incremental.sh pg_to_oracle --tables public.address --mode upsert --key-columns address_id --incremental-column last_update
 ```
 
-Pastikan `reports/run_<timestamp>_<run_id>/sync_result.csv` berisi `DRY_RUN`, bukan `FAILED`.
+Job wrapper guarantees:
 
-Untuk incremental dry-run:
+- one lock file per profile and direction
+- retry loop
+- timeout
+- optional alert hook
+- log rotation
+- old rotated log cleanup
+
+## 7. Failure Recovery
+
+### Sync Failed
+
+1. Check `reports/run_<...>/logs.txt`.
+2. Open `report.xlsx` and `report.html`.
+3. If the failure is transient and checkpointable, run:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --tables-file configs/tables.yaml --incremental
+ops resume --config config.yaml
 ```
 
-Untuk melihat checkpoint dan watermark sebelum execute:
+4. If the incremental watermark is wrong, inspect and reset:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --list-runs
-python -m oracle_pg_sync sync --config config.yaml --watermark-status
+ops watermarks --config config.yaml
+ops reset-watermark public.address --config config.yaml
 ```
 
-## Step 4. Execute Sync
+### Dependency Failure
+
+1. Review `dependency_pre.csv`, `dependency_post.csv`, and `dependency_summary.csv`.
+2. Run:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --execute
+ops dependencies repair --config config.yaml
 ```
 
-Untuk satu table:
+3. If repair still exits non-zero, keep the run failed and escalate to DBA review.
 
-```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --execute
-```
+### Checksum Failure
 
-Execute reverse sync:
+Treat checksum mismatch as a hard validation failure. Do not mark the run successful until source/target row selection, keying, and LOB policy are verified.
 
-```bash
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate --execute
-```
+## 8. Rollback Strategy
 
-Pantau:
+There is no global automatic rollback command. Use the database-native recovery path that matches the executed mode.
 
-```bash
-tail -f reports/sync.log
-```
+Recommended rollback planning:
 
-Jika run gagal setelah beberapa chunk sukses, resume:
+- `truncate` / `delete`: ensure you have a source-of-truth reload path before execute
+- `append`: identify inserted batch scope before cleanup
+- `upsert`: keep key-based reconciliation queries ready
+- `swap`: only enable with explicit DBA approval and storage review
 
-```bash
-python -m oracle_pg_sync sync --config config.yaml --resume RUN_ID --execute
-```
+Operationally:
 
-Jangan reset checkpoint kecuali ingin mengulang run dari awal:
+1. capture the failing run ID
+2. preserve the run directory
+3. disable cron for the affected direction
+4. repair data using database-native SQL or a controlled resync
+5. rerun dry-run before re-enabling execute jobs
 
-```bash
-python -m oracle_pg_sync sync --config config.yaml --reset-checkpoint RUN_ID
-```
+## 9. Post-Change Checklist
 
-## Step 5. Audit Ulang
+After changing config, table scope, or LOB policy:
 
-Setelah sync:
-
-```bash
-python -m oracle_pg_sync audit --config config.yaml --exact-count
-python -m oracle_pg_sync report --config config.yaml
-```
-
-Cek `report.html`.
-
-Kriteria sukses:
-
-- Table penting status `MATCH`.
-- `sync_result.csv` tidak memiliki `FAILED`.
-- Rowcount critical table match.
-- Tidak ada type mismatch baru.
-
-## Step 6. Arsip Report
-
-Contoh:
-
-```bash
-mkdir -p run-logs/$(date +%Y%m%d_%H%M%S)
-cp reports/* run-logs/$(date +%Y%m%d_%H%M%S)/ 2>/dev/null || true
-```
-
-Manifest durable setiap run ada di:
-
-```text
-reports/run_<timestamp>_<run_id>/manifest.json
-```
-
-Manifest aman untuk audit karena password disanitasi.
-
-## Lock dan Resource Policy
-
-- Default `parallel_workers: 1`, jadi tidak membuka banyak koneksi/load bersamaan.
-- Default `fast_count: true` untuk audit ringan.
-- Default `exact_count_after_load: false`; exact count dijalankan manual saat window validasi.
-- Default `pg_lock_timeout: 5s`; jika PostgreSQL tidak bisa ambil lock untuk truncate, sync gagal cepat.
-- Mode `truncate` tidak membuat staging table, jadi menghindari kasus storage penuh karena `__load`/`__old`.
-
-## Rollback Mode Swap
-
-Jika `keep_old_after_swap: true`, old table disimpan dengan suffix:
-
-```text
-table__old_YYYYMMDDHHMMSS
-```
-
-Rollback manual PostgreSQL:
-
-```sql
-BEGIN;
-LOCK TABLE public.sample_customer IN ACCESS EXCLUSIVE MODE;
-ALTER TABLE public.sample_customer RENAME TO sample_customer__bad_20260101010101;
-ALTER TABLE public.sample_customer__old_20260101000000 RENAME TO sample_customer;
-COMMIT;
-```
-
-Sesuaikan nama table old dari database actual.
-
-## Rollback Mode Truncate
-
-Mode `truncate` tidak menyimpan old table. Rollback membutuhkan backup/restore eksternal.
-
-Untuk production full refresh di RDS, default tetap `truncate` dengan
-backup/restore plan. `swap` hanya dipakai kalau free storage cukup, dependency
-sudah direview, dan `sync.allow_swap: true` sudah diset.
-
-## Kenapa Swap Bisa Memenuhi RDS Storage
-
-Mode `swap` bukan sekadar rename. Sebelum rename, PostgreSQL harus menyimpan
-staging table lengkap, index/constraint staging dari `LIKE INCLUDING ALL`, WAL
-untuk load, temp file untuk build index/sort, dan table lama sampai transaksi
-selesai. Jika `keep_old_after_swap: true`, table lama tetap tersimpan setelah
-commit. Di RDS semua ini memakai storage instance yang sama.
-
-## Rollback Mode Append
-
-Rollback append tergantung ada tidaknya batch marker atau timestamp. Jika tidak ada marker, rollback sulit.
-
-Disarankan tambahkan filter `where` dan audit hasil sebelum append production.
-
-## Rollback Mode Upsert
-
-Upsert mengubah row existing. Rollback membutuhkan backup atau audit trail.
-
-## Kapan Pakai --force
-
-Pakai `--force` hanya jika semua kondisi ini terpenuhi:
-
-- Column mismatch sudah dipahami.
-- Kolom yang tidak match tidak dibutuhkan untuk load.
-- Type mismatch tidak menyebabkan data loss.
-- DBA menyetujui.
-- Ada backup atau rollback plan.
-
-Command:
-
-```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --mode swap --execute --force
-```
-
-## Catatan Reverse Sync PostgreSQL ke Oracle
-
-- Mode yang didukung: `truncate`, `append`, `delete`, `upsert`.
-- Mode `swap` tidak diaktifkan untuk Oracle karena berisiko merusak grants, views, triggers, synonyms, dan dependency.
-- `truncate` di Oracle melakukan implicit commit; gunakan hanya saat rollback eksternal tersedia.
-- `delete` lebih berat, tapi lebih mudah dikontrol dalam transaction.
-- `upsert` memakai Oracle `MERGE` dan wajib `key_columns`.
-
-## Rekomendasi Table Besar
-
-- Audit awal pakai `--fast-count`.
-- Jalankan sync per table, bukan semua sekaligus.
-- Set `parallel_workers: 1`.
-- Pastikan disk cukup untuk staging plus old table.
-- Jalankan exact count setelah load hanya saat window cukup.
-- Monitor lock di PostgreSQL.
-
-Query monitor lock:
-
-```sql
-SELECT pid, wait_event_type, wait_event, query
-FROM pg_stat_activity
-WHERE datname = current_database()
-ORDER BY query_start NULLS LAST;
-```
+1. `ops doctor --config config.yaml`
+2. `ops audit --config config.yaml`
+3. `ops analyze lob --config config.yaml`
+4. dry-run the affected direction
+5. only then return to `--go`

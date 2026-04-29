@@ -417,6 +417,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "dependencies":
         from oracle_pg_sync.reports.writer_csv import write_csv
+        from oracle_pg_sync.reports.writer_excel import write_central_report_xlsx
+        from oracle_pg_sync.reports.writer_html import write_html_report
 
         run_id = new_run_id()
         manifest = RunManifest(
@@ -436,11 +438,28 @@ def main(argv: list[str] | None = None) -> int:
         out_path = Path(args.out) if args.out else run_dir / "table_object_dependencies.csv"
         write_csv(out_path, rows)
         summary_rows = _write_dependency_summary(run_dir, rows, [])
+        write_central_report_xlsx(
+            run_dir / "report.xlsx",
+            dependency_rows=rows,
+            dependency_summary_rows=summary_rows,
+            config_sanitized=sanitize(config),
+        )
+        write_html_report(
+            run_dir / "report.html",
+            inventory_rows=[],
+            column_diff_rows=[],
+            dependency_rows=rows,
+            dependency_summary_rows=summary_rows,
+            maintenance_rows=[],
+        )
         _copy_log_to_run_dir(report_dir, run_dir)
         manifest_path = manifest.finish(
             result_rows=rows,
             dependency_rows=summary_rows,
-            report_files=[str(out_path), *_run_report_files(run_dir, "dependency_summary.csv", "logs.txt")],
+            report_files=[
+                str(out_path),
+                *_run_report_files(run_dir, "dependency_summary.csv", "report.xlsx", "report.html", "logs.txt"),
+            ],
         )
         logger.info("Manifest dibuat: %s", manifest_path)
         logger.info("Dependency audit selesai. ROWS=%s OUT=%s", len(rows), out_path)

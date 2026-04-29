@@ -3,8 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-"$SCRIPT_DIR/every_5min.sh" \
-  --direction postgres-to-oracle \
+"$SCRIPT_DIR/incremental.sh" \
+  pg_to_oracle \
   --tables public.address \
   --mode upsert \
   --key-columns address_id \

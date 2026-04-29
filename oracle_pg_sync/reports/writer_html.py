@@ -12,7 +12,19 @@ DEPENDENCY_HEAVY_FIELDS = [
     "function_count_related_postgres",
 ]
 TOP_ROWCOUNT_FIELDS = ["table_name", "oracle_row_count", "postgres_row_count", "status"]
-COLUMN_DIFF_FIELDS = ["table_name", "diff_type", "column_name", "oracle_type", "postgres_type"]
+COLUMN_DIFF_FIELDS = [
+    "table_name",
+    "column_name",
+    "oracle_type",
+    "postgres_type",
+    "oracle_ordinal",
+    "postgres_ordinal",
+    "diff_type",
+    "compatibility_status",
+    "severity",
+    "reason",
+    "suggested_action",
+]
 SYNC_PROBLEM_FIELDS = ["table_name", "mode", "status", "rows_loaded", "message"]
 CHECKSUM_FIELDS = [
     "table_name",
@@ -48,6 +60,7 @@ LOB_FIELDS = [
     "validation_mode",
     "lob_validation_mode",
     "warning",
+    "recommendation",
     "suggestion",
 ]
 DEPENDENCY_FIELDS = [
@@ -86,19 +99,21 @@ def write_html_report(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     sync_rows = sync_rows or []
-    status_counts = Counter(row.get("status", "UNKNOWN") for row in inventory_rows)
+    table_rows = sync_rows or inventory_rows
+    status_counts = Counter(row.get("status", "UNKNOWN") for row in table_rows)
     top_rows = sorted(
-        inventory_rows,
+        inventory_rows or sync_rows,
         key=lambda row: int(row.get("oracle_row_count") or 0),
         reverse=True,
     )[:10]
-    rowcount_mismatch = [row for row in inventory_rows if not row.get("row_count_match")]
+    rowcount_mismatch = [row for row in (inventory_rows or sync_rows) if not row.get("row_count_match")]
     failed_sync = [row for row in sync_rows if row.get("status") in {"FAILED", "WARNING", "SKIPPED"}]
     checksum_rows = checksum_rows or [row for row in sync_rows if row.get("checksum_status")]
     dependency_rows = dependency_rows or []
     dependency_summary_rows = dependency_summary_rows or []
     maintenance_rows = maintenance_rows or []
     lob_rows = lob_rows or [row for row in sync_rows if row.get("lob_columns_detected") or row.get("lob_type")]
+    column_diff_rows = _combine_column_diff_rows(column_diff_rows)
     dependency_heavy = sorted(
         inventory_rows,
         key=lambda row: int(row.get("view_count_related_oracle") or 0)
@@ -131,7 +146,21 @@ def write_html_report(
   <meta charset="utf-8">
   <title>Oracle PostgreSQL Sync Audit</title>
   <style>
-    body {{ font-family: Arial, sans-serif; margin: 24px; color: #1f2937; }}
+    :root {{
+      --bg: linear-gradient(180deg, #f5efe1 0%, #fffdf7 42%, #f8f4ec 100%);
+      --card: rgba(255, 251, 242, 0.95);
+      --line: #d8cdb8;
+      --ink: #1f2937;
+      --muted: #6b7280;
+      --error: #b91c1c;
+      --error-bg: #fee2e2;
+      --warn-bg: #fef3c7;
+      --ok-bg: #dcfce7;
+      --info-bg: #dbeafe;
+      --head: #efe5d0;
+      --accent: #8a5a1f;
+    }}
+    body {{ font-family: "IBM Plex Sans", "Segoe UI", sans-serif; margin: 24px; color: var(--ink); background: var(--bg); }}
     h1, h2 {{ margin-bottom: 8px; }}
     .metrics {{
       display: grid;
@@ -140,29 +169,38 @@ def write_html_report(
       margin: 16px 0 24px;
     }}
     .metric {{
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
       padding: 12px;
-      background: #f9fafb;
+      background: var(--card);
+      box-shadow: 0 10px 30px rgba(138, 90, 31, 0.08);
     }}
     .metric strong {{ display: block; font-size: 24px; margin-top: 4px; }}
-    .toolbar {{ display: flex; gap: 12px; margin: 12px 0 20px; }}
-    .toolbar input, .toolbar select {{ padding: 8px; border: 1px solid #9ca3af; border-radius: 4px; }}
-    table {{ border-collapse: collapse; width: 100%; margin: 12px 0 28px; font-size: 13px; }}
+    .toolbar {{ display: flex; gap: 12px; margin: 12px 0 20px; flex-wrap: wrap; }}
+    .toolbar input, .toolbar select {{
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.9);
+    }}
+    .toolbar label {{ display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }}
+    table {{ border-collapse: collapse; width: 100%; margin: 12px 0 28px; font-size: 13px; background: rgba(255,255,255,0.82); }}
     th, td {{
-      border: 1px solid #d1d5db;
+      border: 1px solid var(--line);
       padding: 6px 8px;
       text-align: left;
       vertical-align: top;
     }}
-    th {{ background: #eef2f7; }}
+    th {{ background: var(--head); }}
     tr:nth-child(even) {{ background: #fafafa; }}
-    tr.status-failed, tr.status-mismatch, tr.status-missing {{ background: #fee2e2; }}
-    tr.status-warning, tr.status-skipped {{ background: #fef3c7; }}
-    tr.status-success, tr.status-match {{ background: #dcfce7; }}
+    tr.status-failed, tr.status-mismatch, tr.status-missing, tr.severity-error {{ background: var(--error-bg); }}
+    tr.status-warning, tr.status-skipped, tr.severity-warning {{ background: var(--warn-bg); }}
+    tr.status-success, tr.status-match, tr.severity-ok {{ background: var(--ok-bg); }}
+    tr.severity-info {{ background: var(--info-bg); }}
     tr.heavy {{ outline: 2px solid #f59e0b; }}
     details {{ margin: 14px 0; }}
     summary {{ cursor: pointer; font-weight: 700; }}
+    .pill {{ display: inline-block; padding: 2px 8px; border-radius: 999px; background: #f3ead7; color: var(--accent); font-size: 12px; }}
   </style>
 </head>
 <body>
@@ -171,7 +209,7 @@ def write_html_report(
   <div class="toolbar">
     <input id="searchBox" type="search" placeholder="Search table/object" oninput="filterTables()">
     <select id="statusFilter" onchange="filterTables()">
-      <option value="">All statuses</option>
+      <option value="">All table statuses</option>
       <option value="SUCCESS">SUCCESS</option>
       <option value="MATCH">MATCH</option>
       <option value="WARNING">WARNING</option>
@@ -180,16 +218,26 @@ def write_html_report(
       <option value="MISSING">MISSING</option>
       <option value="LOB-HEAVY">LOB-heavy</option>
     </select>
+    <select id="severityFilter" onchange="filterTables()">
+      <option value="">All severities</option>
+      <option value="ERROR">ERROR</option>
+      <option value="WARNING">WARNING</option>
+      <option value="INFO">INFO</option>
+      <option value="OK">OK</option>
+    </select>
+    <label><input id="hideInfo" type="checkbox" checked onchange="filterTables()">Hide INFO rows</label>
   </div>
   <div class="metrics">
-    <div class="metric">Total Table<strong>{len(inventory_rows)}</strong></div>
+    <div class="metric">Total Table<strong>{len(table_rows)}</strong></div>
     <div class="metric">MATCH<strong>{status_counts.get("MATCH", 0)}</strong></div>
     <div class="metric">WARNING<strong>{status_counts.get("WARNING", 0)}</strong></div>
     <div class="metric">MISMATCH<strong>{status_counts.get("MISMATCH", 0)}</strong></div>
     <div class="metric">MISSING<strong>{status_counts.get("MISSING", 0)}</strong></div>
+    <div class="metric">Schema ERROR<strong>{sum(1 for row in column_diff_rows if str(row.get("severity", "")).upper() == "ERROR")}</strong></div>
+    <div class="metric">Schema INFO<strong>{sum(1 for row in column_diff_rows if str(row.get("severity", "")).upper() == "INFO")}</strong></div>
   </div>
   {_section("Top Table Rowcount Terbesar", top_rows, TOP_ROWCOUNT_FIELDS)}
-  {_section("Column Mismatch", column_diff_rows[:100], COLUMN_DIFF_FIELDS)}
+  {_section("Column Diff", column_diff_rows[:100], COLUMN_DIFF_FIELDS)}
   {_section("Rowcount Mismatch", rowcount_mismatch[:100], TOP_ROWCOUNT_FIELDS)}
   {_section("Dependency Summary", dependency_summary_rows, DEPENDENCY_SUMMARY_FIELDS)}
   {_section("Dependency Object Terbanyak", dependency_heavy, DEPENDENCY_HEAVY_FIELDS)}
@@ -202,13 +250,18 @@ def write_html_report(
     function filterTables() {{
       const query = document.getElementById('searchBox').value.toLowerCase();
       const status = document.getElementById('statusFilter').value.toLowerCase();
+      const severity = document.getElementById('severityFilter').value.toLowerCase();
+      const hideInfo = document.getElementById('hideInfo').checked;
       document.querySelectorAll('tbody tr').forEach((row) => {{
         const text = row.innerText.toLowerCase();
         const statusMatch = !status || text.includes(status);
+        const severityMatch = !severity || text.includes(severity);
         const queryMatch = !query || text.includes(query);
-        row.style.display = statusMatch && queryMatch ? '' : 'none';
+        const infoMatch = !(hideInfo && row.className.includes('severity-info'));
+        row.style.display = statusMatch && severityMatch && queryMatch && infoMatch ? '' : 'none';
       }});
     }}
+    filterTables();
   </script>
 </body>
 </html>
@@ -238,12 +291,27 @@ def _section(title: str, rows: list[dict], fields: list[str]) -> str:
 def _row_classes(row: dict) -> list[str]:
     statuses = [
         str(row.get(field, "")).strip().lower().replace(" ", "-")
-        for field in ("status", "validation_status", "maintenance_status", "compile_status")
+        for field in ("status", "validation_status", "maintenance_status", "compile_status", "severity")
         if row.get(field)
     ]
     classes = [f"status-{status}" for status in statuses]
+    severity = str(row.get("severity", "")).strip().lower().replace(" ", "-")
+    if severity:
+        classes.append(f"severity-{severity}")
     if str(row.get("classification", "")).upper() == "LOB-HEAVY":
         classes.append("heavy")
     if int(row.get("broken_count") or 0) > 0:
         classes.append("status-failed")
     return classes
+
+
+def _combine_column_diff_rows(rows: list[dict]) -> list[dict]:
+    combined: list[dict] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for row in rows:
+        marker = tuple(sorted((str(key), str(value)) for key, value in row.items()))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        combined.append(row)
+    return combined

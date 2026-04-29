@@ -1,269 +1,93 @@
 # Troubleshooting
 
-## ModuleNotFoundError: oracledb
+## `ops doctor` reports `oracle_connection,ERROR`
 
-Install dependency:
+Check:
 
-```bash
-pip install -r requirements.txt
-```
+- DSN or host/service configuration
+- Oracle listener reachability
+- Oracle client library path when thick mode is required
+- account visibility into the configured schema
 
-Atau:
+## `postgres_pgcrypto,WARNING`
 
-```bash
-pip install oracledb
-```
+Checksum SQL for PostgreSQL expects `pgcrypto` to be installed when hashing is used.
 
-## ModuleNotFoundError: psycopg
-
-Install dependency:
-
-```bash
-pip install -r requirements.txt
-```
-
-## DPI-1047 atau Oracle Client Library Tidak Ketemu
-
-Jika memakai thick mode, pastikan Oracle Instant Client terinstall. Ikuti
-[Oracle Client Install](ORACLE_CLIENT_INSTALL.md), lalu pastikan `.env` berisi:
-
-```dotenv
-ORACLE_CLIENT_LIB_DIR=/opt/oracle/instantclient_23_9
-```
-
-Pastikan folder tersebut berisi library Oracle Client.
-
-## ORA-01017 Invalid Username/Password
-
-Cek:
-
-- `ORACLE_USER`
-- `ORACLE_PASSWORD`
-- service yang dituju benar
-- user tidak locked
-
-## ORA-12154 atau ORA-12514
-
-Cek:
-
-- `ORACLE_DSN`
-- `ORACLE_HOST`
-- `ORACLE_PORT`
-- `ORACLE_SERVICE_NAME`
-- Listener Oracle mengenali service name tersebut.
-
-Tes network:
-
-```bash
-nc -vz $ORACLE_HOST $ORACLE_PORT
-```
-
-## PostgreSQL Connection Refused
-
-Cek:
-
-- `PG_HOST`
-- `PG_PORT`
-- firewall/security group
-- PostgreSQL listen address
-
-Tes:
-
-```bash
-nc -vz $PG_HOST $PG_PORT
-```
-
-## Permission Denied for Schema
-
-User PostgreSQL butuh privilege schema:
+Install:
 
 ```sql
-GRANT USAGE, CREATE ON SCHEMA public TO sync_user;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 ```
 
-## Permission Denied for Table
+## Audit shows `MISMATCH`
 
-Grant table privilege:
+Open `column_diff.csv` or the `05_Column_Diff` sheet and look at:
 
-```sql
-GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public TO sync_user;
-```
+- `severity`
+- `reason`
+- `suggested_action`
 
-## COPY Gagal Karena Type Mismatch
+Remember:
 
-Kemungkinan:
+- `INFO` rows are not counted as mismatches
+- `ERROR` rows are
 
-- PostgreSQL column terlalu kecil.
-- Oracle `NUMBER` berisi decimal tapi PG integer.
-- Bytea/text tidak cocok.
-- Ada karakter null `\x00` di string.
+## Sync exits because of dependency health
 
-Langkah:
-
-1. Jalankan audit.
-2. Buka `type_mismatch.csv`.
-3. Perbaiki DDL PostgreSQL atau rename mapping.
-4. Ulang dry-run.
-
-## Sync Table Di-Skip
-
-Jika status `SKIPPED`, biasanya karena mismatch fatal:
-
-- table missing
-- missing column
-- extra column
-- type mismatch
-
-Cek:
-
-```text
-reports/run_<timestamp>_<run_id>/inventory_summary.csv
-reports/run_<timestamp>_<run_id>/column_diff.csv
-reports/run_<timestamp>_<run_id>/type_mismatch.csv
-reports/run_<timestamp>_<run_id>/sync_result.csv
-```
-
-Jika tetap ingin lanjut:
+Run:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --tables sample_customer --mode swap --execute --force
+ops dependencies check --config config.yaml
+ops dependencies repair --config config.yaml
 ```
 
-Gunakan `--force` hanya setelah review.
+If repair still leaves critical rows, fix the invalid object directly in Oracle or PostgreSQL and rerun.
 
-## Rowcount Tidak Match
+## Reverse sync skips a table
 
-Penyebab umum:
+Common causes:
 
-- Ada data berubah saat sync berjalan.
-- Audit memakai fast count/statistik lama.
-- `where` filter aktif di table config.
-- Ada trigger/rule di PostgreSQL yang mengubah hasil insert.
-- Ada duplicate/constraint behavior saat upsert.
+- schema diff has fatal `ERROR` rows
+- no key columns for `upsert`
+- all mapped columns were removed by LOB policy
+- a successful checkpoint chunk already exists and `--resume` was used
 
-Langkah:
+## LOB execute fails
+
+Default LOB behavior is `error`. Configure a table or column strategy:
+
+- `skip`
+- `null`
+- `stream`
+
+Use:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --tables sample_customer --exact-count
+ops analyze lob --config config.yaml
 ```
 
-Jika masih mismatch, cek manual:
+## Job wrapper exits non-zero
 
-```sql
-SELECT COUNT(1) FROM public.sample_customer;
-```
+Check:
 
-Dan di Oracle:
+- `reports/job_logs/*.log`
+- lock file collisions under `reports/locks/`
+- timeout too low
+- alert hook side effects
 
-```sql
-SELECT COUNT(1) FROM APP_SCHEMA.SAMPLE_CUSTOMER;
-```
+Run the same sync command manually with `ops sync ...` to reproduce outside cron.
 
-## Swap Gagal Karena Lock Timeout
+## Resume does not continue where expected
 
-Penyebab:
-
-- Aplikasi sedang query/transaction panjang di table target.
-- Job lain memegang lock.
-
-Cek PostgreSQL:
-
-```sql
-SELECT pid, state, wait_event_type, wait_event, query
-FROM pg_stat_activity
-WHERE datname = current_database()
-ORDER BY query_start NULLS LAST;
-```
-
-Solusi:
-
-- Jalankan di maintenance window.
-- Hentikan transaction panjang setelah approval.
-- Ulang sync table tersebut.
-
-## Upsert Gagal: No Unique Constraint
-
-Mode `upsert` butuh unique index/constraint sesuai `key_columns`.
-
-Contoh:
-
-```sql
-CREATE UNIQUE INDEX CONCURRENTLY sample_customer_uq
-ON public.sample_customer (customer_id);
-```
-
-Lalu config:
-
-```yaml
-tables:
-  - name: public.sample_customer
-    mode: upsert
-    key_columns: [customer_id]
-```
-
-## Reverse Sync PostgreSQL ke Oracle Gagal Saat Upsert
-
-Mode reverse `upsert` memakai Oracle `MERGE`. Pastikan:
-
-- `key_columns` diisi.
-- Key column ada di Oracle target.
-- Data source tidak menghasilkan duplicate untuk key yang sama.
-- User Oracle punya privilege insert/update.
-
-Contoh:
-
-```yaml
-tables:
-  - name: public.sample_customer
-    mode: upsert
-    key_columns: [CUSTOMER_ID]
-```
-
-Command:
+Inspect:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode upsert --execute
+oracle-pg-sync-audit sync --config config.yaml --list-runs
+ops status --config config.yaml
 ```
 
-## Reverse Sync Swap Di-Skip
+If a watermark is wrong, reset it with `ops reset-watermark`.
 
-Ini by design. `swap` ke Oracle tidak diaktifkan karena dapat mengganggu grants,
-views, triggers, synonyms, dan dependency. Gunakan `truncate`, `delete`,
-`append`, atau `upsert`.
+## HTML report looks empty
 
-## report.html Kosong
-
-Kemungkinan CSV belum dibuat. Jalankan audit dulu:
-
-```bash
-python -m oracle_pg_sync audit --config config.yaml
-python -m oracle_pg_sync report --config config.yaml
-```
-
-## Excel Tidak Terbuat
-
-Pastikan dependency:
-
-```bash
-pip install pandas openpyxl
-```
-
-Atau reinstall:
-
-```bash
-pip install -r requirements.txt
-```
-
-## Debug Log Lebih Detail
-
-Tambahkan `--verbose`:
-
-```bash
-python -m oracle_pg_sync --verbose audit --config config.yaml
-```
-
-Atau:
-
-```bash
-python -m oracle_pg_sync audit --config config.yaml --verbose
-```
+The HTML dashboard is run-scoped. Make sure you are opening the report in the latest `reports/run_<timestamp>_<run_id>/` directory rather than the root `reports/` folder.

@@ -37,7 +37,7 @@ sync:
   pg_lock_timeout: 5s
   pg_statement_timeout: '0'
   checkpoint_dir: reports/checkpoints/checkpoint.sqlite3
-  truncate_resume_strategy: staging
+  truncate_resume_strategy: restart_table
   staging_schema: null
 reports:
   output_dir: reports
@@ -53,7 +53,7 @@ job:
 validation:
   checksum:
     enabled: false
-    mode: chunk
+    mode: table
     batch_size: 5000
     chunk_key: null
     columns: auto

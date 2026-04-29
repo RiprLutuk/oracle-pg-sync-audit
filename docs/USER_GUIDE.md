@@ -1,426 +1,337 @@
 # User Guide
 
-Dokumen ini adalah panduan utama untuk menjalankan `oracle-pg-sync-audit`
-dari awal sampai menghasilkan report. Tool ini mendukung dua arah sync:
+`oracle-pg-sync-audit` is a DBA-facing sync and audit tool for Oracle and PostgreSQL. It supports:
 
-- Oracle ke PostgreSQL.
-- PostgreSQL ke Oracle.
+- Oracle -> PostgreSQL sync
+- PostgreSQL -> Oracle sync
+- dry-run by default
+- checkpoint and resume
+- incremental sync with stored watermarks
+- dependency-aware post-sync maintenance
+- LOB analysis and LOB policy controls
+- centralized Excel and HTML reports
+- job wrappers for daily and incremental cron runs
 
-## 1. Prasyarat
-
-- Python 3.11 atau lebih baru.
-- Akses network dari mesin ini ke Oracle dan PostgreSQL.
-- User Oracle punya privilege baca metadata dan data table target.
-- User PostgreSQL punya privilege baca metadata, insert/copy, truncate, create staging table, rename table untuk mode `swap`, dan analyze.
-- Oracle Instant Client jika environment membutuhkan thick mode.
-
-Privilege Oracle yang biasanya dibutuhkan:
-
-```sql
-SELECT_CATALOG_ROLE
-SELECT ON target_schema.target_table
-SELECT ON V_$DATABASE -- opsional jika nanti memakai snapshot SCN/custom logic
-```
-
-Privilege PostgreSQL yang biasanya dibutuhkan:
-
-```sql
-USAGE ON SCHEMA public
-SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public
-CREATE ON SCHEMA public
-```
-
-## 2. Install
+## Install
 
 ```bash
 cd /home/lutuk/project/pg2ora2pg/oracle-pg-sync-audit
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-Opsional, install sebagai package lokal:
-
-```bash
 pip install -e ".[dev]"
 ```
 
-Setelah install editable, command ini tersedia:
+Primary entrypoints:
 
 ```bash
 oracle-pg-sync-audit --help
+ops --help
 ```
 
-Tanpa install editable, gunakan:
+## Configure
 
-```bash
-python -m oracle_pg_sync --help
-```
-
-## 3. Setup File Config
+Start from the examples:
 
 ```bash
 cp .env.example .env
 cp config.yaml.example config.yaml
 ```
 
-Isi `.env` dengan credential real. Jangan commit `.env`.
+Put secrets only in `.env`. Do not commit `.env`, `config.yaml`, or real table lists.
 
-Contoh minimal:
-
-```dotenv
-ORACLE_HOST=oracle-host.example.com
-ORACLE_PORT=1521
-ORACLE_SERVICE_NAME=ORCLPDB1
-ORACLE_USER=app_reader
-ORACLE_PASSWORD=REPLACE_ME
-ORACLE_SCHEMA=APP_SCHEMA
-
-PG_HOST=postgres-host.example.com
-PG_PORT=5432
-PG_DATABASE=target_db
-PG_USER=sync_user
-PG_PASSWORD=REPLACE_ME
-PG_SCHEMA=public
-```
-
-Jika memakai Oracle DSN penuh, isi `ORACLE_DSN` dan host/service bisa dikosongkan:
+Minimal connection variables:
 
 ```dotenv
 ORACLE_DSN=oracle-host.example.com:1521/ORCLPDB1
+ORACLE_USER=app_reader
+ORACLE_PASSWORD=REDACTED
+ORACLE_SCHEMA=APP
+
+PG_HOST=postgres-host.example.com
+PG_PORT=5432
+PG_DATABASE=appdb
+PG_USER=sync_user
+PG_PASSWORD=REDACTED
+PG_SCHEMA=public
 ```
 
-## 4. Isi Table Target
+Declare tables inline or by `tables_file`. Typical production usage is `tables_file: configs/tables.yaml`.
 
-Edit `config.yaml`:
+Example table entry:
 
 ```yaml
 tables:
-  - name: public.sample_customer
+  - name: public.address
+    directions: [oracle-to-postgres, postgres-to-oracle]
     oracle_to_postgres_mode: truncate
-    postgres_to_oracle_mode: truncate
-    directions:
-      - oracle-to-postgres
-      - postgres-to-oracle
-    key_columns: [customer_id]
+    postgres_to_oracle_mode: upsert
+    key_columns: [address_id]
+    incremental:
+      enabled: true
+      strategy: updated_at
+      column: last_update
+      overlap_minutes: 5
+    validation:
+      checksum:
+        enabled: true
 ```
 
-Nama table boleh `sample_customer` atau `public.sample_customer`. Jika schema tidak disebut, default memakai `postgres.schema`.
+## Audit And Smart Schema Diff
 
-`config.yaml` bawaan sudah diisi dari script lama di folder `example/`:
-
-- `config.yaml.example` dan `configs/tables.example.yaml` sengaja memakai table dummy.
-- Copy table list real dari environment lokal ke `configs/tables.yaml`.
-- Pastikan `config.yaml` berisi `tables_file: configs/tables.yaml`.
-- Gunakan `configs/tables.example.yaml` sebagai template table list baru.
-
-## 5. Rename Column Mapping
-
-Jika nama kolom Oracle dan PostgreSQL berbeda tapi dianggap equivalent, isi `rename_columns`.
-
-Format mapping adalah Oracle column ke PostgreSQL column:
-
-```yaml
-rename_columns:
-  public.sample_customer:
-    legacy_status: status
-```
-
-Dengan rule ini, Oracle `LEGACY_STATUS` dibandingkan dan disync ke PostgreSQL `status`.
-
-## 6. Audit Pertama
-
-Jalankan audit metadata dan rowcount:
+Run a schema/data audit:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml
+oracle-pg-sync-audit audit --config config.yaml
 ```
 
-Jika `tables` di config kosong, audit otomatis mengambil semua table dari PostgreSQL schema yang diset di config.
+Important diff behavior:
 
-Kalau `config.yaml` tetap punya table list tapi ingin compare semua table yang ada di PostgreSQL schema:
+- column order only -> `INFO`, not a mismatch
+- compatible aliases such as `NUMBER(38,0)` vs `numeric(38,0)` -> not a mismatch
+- Oracle `DATE` vs PostgreSQL `timestamp` -> `INFO`
+- narrower PostgreSQL target types -> `ERROR`
+- missing columns -> `ERROR`
+
+Useful audit variants:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --all-postgres-tables --fast-count
-python -m oracle_pg_sync audit --config config.yaml --all-postgres-tables --limit 10 --fast-count
+oracle-pg-sync-audit audit --config config.yaml --tables public.address public.housemaster
+oracle-pg-sync-audit audit --config config.yaml --all-postgres-tables --fast-count
+oracle-pg-sync-audit audit --config config.yaml --workers 4 --suggest-drop
+oracle-pg-sync-audit audit-objects --config config.yaml
 ```
 
-Audit table tertentu:
+## Sync Oracle -> PostgreSQL
+
+Dry-run is the default:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --tables sample_customer sample_order
+ops sync --config config.yaml --direction oracle-to-postgres --tables public.address
 ```
 
-Gunakan fast count untuk table besar:
+Execute the load:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --fast-count
+ops sync --config config.yaml --direction oracle-to-postgres --tables public.address --go
 ```
 
-Gunakan exact count hanya jika siap dengan query berat:
+Run all configured Oracle -> PostgreSQL tables:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --exact-count
+ops sync --config config.yaml --direction oracle-to-postgres --go
 ```
 
-Untuk membuat SQL suggestion seperti script `verify_oracle_pg.py` lama:
+Daily full-refresh defaults:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml
-python -m oracle_pg_sync audit --config config.yaml --suggest-drop
+ops sync --config config.yaml --direction oracle-to-postgres --profile daily --go
 ```
 
-Untuk audit parallel, naikkan worker secara sadar karena setiap worker membuka koneksi Oracle dan PostgreSQL:
+## Sync PostgreSQL -> Oracle
+
+Reverse sync supports:
+
+- `truncate`
+- `append`
+- `delete`
+- `upsert`
+- checkpoint/resume
+- incremental watermark filters
+- optional checksum validation
+- Oracle `MERGE` for upsert
+- LOB policies
+
+Dry-run:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml --workers 4 --fast-count
+ops sync --config config.yaml --direction postgres-to-oracle --tables public.address --mode upsert
 ```
 
-Untuk compare object schema seperti view, sequence, procedure/function, package, trigger:
+Execute:
 
 ```bash
-python -m oracle_pg_sync audit-objects --config config.yaml
-python -m oracle_pg_sync audit-objects --config config.yaml --types view sequence procedure function trigger
-python -m oracle_pg_sync audit-objects --config config.yaml --include-extension-objects
+ops sync --config config.yaml --direction postgres-to-oracle --tables public.address --mode upsert --go
 ```
 
-## 7. Baca Hasil Audit
-
-File utama:
-
-```text
-reports/run_<timestamp>_<run_id>/inventory_summary.csv
-reports/run_<timestamp>_<run_id>/report.html
-reports/run_<timestamp>_<run_id>/column_diff.csv
-reports/run_<timestamp>_<run_id>/type_mismatch.csv
-reports/run_<timestamp>_<run_id>/schema_suggestions.sql
-```
-
-Interpretasi cepat:
-
-- `MATCH`: struktur dan rowcount match.
-- `WARNING`: struktur match, tapi rowcount tidak match atau count tidak lengkap.
-- `MISMATCH`: ada missing column, extra column, atau type mismatch.
-- `MISSING`: table tidak ada di Oracle atau PostgreSQL.
-
-## 8. Sync Dry-Run
-
-Secara default sync aman karena dry-run. Command ini belum mengubah data:
+Single-table incremental override from CLI:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer
-```
-
-Untuk table list lokal yang terpisah dari `config.yaml`:
-
-```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables-file configs/tables.yaml
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables-file configs/tables.yaml --limit 10
-```
-
-`configs/tables.yaml` boleh dibuat simple:
-
-```yaml
-tables:
-  - public.address
-  - public.housemaster
-  - public.a_hp_house_info
-```
-
-Reverse sync PostgreSQL ke Oracle juga dry-run secara default:
-
-```bash
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate
-```
-
-Untuk job incremental manual dari PostgreSQL ke Oracle tanpa memasukkan filter ke `config.yaml`,
-pakai runtime override pada satu table per command:
-
-```bash
-ops sync --config config.yaml \
+ops sync \
+  --config config.yaml \
   --direction postgres-to-oracle \
   --tables public.address \
   --mode upsert \
   --key-columns address_id \
   --incremental-column last_update \
-  --where "last_update >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'" \
   --incremental \
   --go
 ```
 
-Lihat hasilnya di:
+## Incremental Sync, Watermarks, Resume
+
+Checkpoint and watermark commands:
+
+```bash
+ops status --config config.yaml
+ops resume --config config.yaml
+ops resume RUN_ID --config config.yaml
+ops watermarks --config config.yaml
+ops reset-watermark public.address --config config.yaml
+oracle-pg-sync-audit sync --config config.yaml --list-runs
+```
+
+Profiles:
+
+- `--profile daily` -> forces full-refresh semantics
+- `--profile every_5min` -> defaults to `upsert` plus `--incremental`
+
+Notes:
+
+- reverse sync currently checkpoints at full-table phase granularity
+- Oracle -> PostgreSQL chunk/checkpoint state is stored in the same SQLite checkpoint database
+- watermarks are stored by direction, table, strategy, and column
+
+## LOB Handling
+
+Supported Oracle-side LOB families:
+
+- `BLOB` -> PostgreSQL `bytea`
+- `CLOB` / `NCLOB` -> PostgreSQL `text`
+- `LONG` -> PostgreSQL `text`
+- `LONG RAW` -> PostgreSQL `bytea`
+
+Default behavior is conservative:
+
+- `lob_strategy.default: error`
+- no LOB content is copied unless a table or column strategy allows it
+
+LOB strategies:
+
+- `error`
+- `skip`
+- `null`
+- `stream`
+- `include` (normalized internally to `stream`)
+
+Analyze LOB-heavy tables:
+
+```bash
+ops analyze lob --config config.yaml
+ops analyze lob --config config.yaml --tables public.address
+```
+
+LOB analysis reports classification plus recommendation:
+
+- `exclude`
+- `partial_columns`
+- `stream`
+
+## Dependency Lifecycle
+
+Dependency commands:
+
+```bash
+ops dependencies check --config config.yaml
+ops dependencies repair --config config.yaml
+```
+
+Lifecycle on execute/repair:
+
+1. collect dependency graph
+2. refresh dependent PostgreSQL materialized views
+3. recompile invalid Oracle view/package/function/procedure objects in a loop
+4. validate dependent PostgreSQL objects still exist
+5. fail the run if critical dependency rows remain and `dependency.fail_on_broken_dependency` is true
+
+The dependency commands write run-scoped CSV, Excel, and HTML reports.
+
+## Doctor
+
+Run environment checks:
+
+```bash
+ops doctor --config config.yaml
+ops doctor --offline --config config.yaml
+```
+
+Current checks include:
+
+- config load
+- table config presence
+- checkpoint path
+- lock file path
+- disk space
+- Oracle connectivity and dictionary visibility
+- PostgreSQL connectivity
+- PostgreSQL `pgcrypto` extension visibility
+- PostgreSQL schema `USAGE`
+- PostgreSQL schema `CREATE`
+- dependency health on the first configured tables
+
+## Reports
+
+Latest run report:
+
+```bash
+ops report latest --config config.yaml
+oracle-pg-sync-audit report --config config.yaml
+```
+
+Each run writes to:
 
 ```text
-reports/run_<timestamp>_<run_id>/sync_result.csv
-reports/run_<timestamp>_<run_id>/logs.txt
+reports/run_<timestamp>_<run_id>/
 ```
 
-Status `DRY_RUN` berarti tool hanya melakukan precheck dan memberi tahu apa yang akan dilakukan.
+The standard workbook is `report.xlsx` and the standard dashboard is `report.html`.
 
-## 9. Sync Execute
+## Cron Jobs
 
-Eksekusi sungguhan wajib pakai `--execute`:
+Direction-aware wrappers:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --execute
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate --execute
-python -m oracle_pg_sync sync --config config.yaml \
-  --direction postgres-to-oracle \
-  --tables sample_customer \
-  --mode upsert \
-  --where "updated_at >= NOW() - INTERVAL '5 minutes'" \
-  --execute
+./jobs/daily.sh oracle_to_pg
+./jobs/daily.sh pg_to_oracle
+./jobs/incremental.sh oracle_to_pg
+./jobs/incremental.sh pg_to_oracle
 ```
 
-## 10. Checkpoint, Incremental, Checksum, dan LOB
-
-Lihat run checkpoint:
+Examples:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --list-runs
+./jobs/daily.sh oracle_to_pg
+./jobs/incremental.sh pg_to_oracle --tables public.address --mode upsert --key-columns address_id --incremental-column last_update
 ```
 
-Resume run gagal:
+Job wrapper behavior:
+
+- lock file per profile and direction
+- retry loop
+- timeout
+- optional alert command via `ALERT_COMMAND`
+- log rotation by size
+- rotated log cleanup
+
+See [`jobs/crontab.example`](../jobs/crontab.example) for cron lines.
+
+## Common CLI Examples
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --resume RUN_ID --execute
+ops audit --config config.yaml
+ops sync --config config.yaml
+ops sync --config config.yaml --go
+ops resume --config config.yaml
+ops status --config config.yaml
+ops report latest --config config.yaml
+ops analyze lob --config config.yaml
+ops dependencies check --config config.yaml
+ops dependencies repair --config config.yaml
+ops doctor --config config.yaml
 ```
 
-Incremental sync berbasis config table:
+## Safety Notes
 
-```bash
-python -m oracle_pg_sync sync --config config.yaml --tables-file configs/tables.yaml --incremental
-python -m oracle_pg_sync sync --config config.yaml --tables-file configs/tables.yaml --incremental --execute
-```
-
-Scheduler shortcut:
-
-```bash
-jobs/daily.sh
-jobs/every_5min.sh
-```
-
-Keduanya memakai profile CLI, lock file, dan log rotation. Override config path dengan `CONFIG_PATH=/path/config.yaml`.
-
-Cek watermark:
-
-```bash
-python -m oracle_pg_sync sync --config config.yaml --watermark-status
-```
-
-Contoh table dengan BLOB `BLOB_PAYLOAD` dibuat `NULL`, incremental `updated_at`, dan checksum tanpa BLOB:
-
-```yaml
-tables:
-  - source_schema: SAMPLE_APP
-    source_table: SAMPLE_BLOB_TABLE
-    target_schema: public
-    target_table: sample_blob_table
-    primary_key:
-      - record_id
-    incremental:
-      enabled: true
-      strategy: updated_at
-      column: updated_at
-      overlap_minutes: 10
-    lob_strategy:
-      columns:
-        BLOB_PAYLOAD: null
-    validation:
-      checksum:
-        enabled: true
-        mode: chunk
-        exclude_columns:
-          - BLOB_PAYLOAD
-```
-
-Setiap audit/sync/all membuat manifest:
-
-```text
-reports/run_<timestamp>_<run_id>/manifest.json
-```
-
-Jika struktur mismatch, table akan di-skip. Pakai `--force` hanya setelah DBA menyetujui risiko:
-
-```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --execute --force
-```
-
-## 10. Generate Report Ulang
-
-Jika CSV sudah ada dan ingin regenerate HTML:
-
-```bash
-python -m oracle_pg_sync report --config config.yaml
-```
-
-## 11. Full Flow
-
-Audit, sync, audit ulang, report:
-
-```bash
-python -m oracle_pg_sync all --config config.yaml --execute
-```
-
-Untuk production, lebih disarankan jalankan bertahap:
-
-```bash
-python -m oracle_pg_sync audit --config config.yaml --fast-count
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --execute
-python -m oracle_pg_sync audit --config config.yaml --exact-count
-python -m oracle_pg_sync report --config config.yaml
-```
-
-## 12. Mode Sync
-
-`truncate`
-
-- Truncate target lalu load ulang.
-- Cepat, tapi destructive.
-- Butuh `--execute`.
-- Menjaga index, trigger, grants, dan view/materialized view dependency karena table object tidak diganti.
-- Memakai PostgreSQL `pg_lock_timeout` agar gagal cepat kalau table sedang terkunci.
-- Berlaku untuk dua arah.
-
-`swap`
-
-- Buat table staging `table__load`.
-- Copy data ke staging.
-- Verify rowcount staging.
-- Rename live table menjadi old table.
-- Rename staging menjadi live table.
-- Tidak default karena butuh storage staging, index staging, WAL/temp, dan old table selama transaksi.
-- Execute di-skip kecuali `sync.allow_swap: true` atau command memakai `--force`.
-- Dry-run menampilkan estimasi storage tambahan jika ukuran table bisa dibaca dari PostgreSQL.
-- Saat ini hanya aktif untuk Oracle ke PostgreSQL.
-
-`append`
-
-- Insert data baru ke target tanpa delete/truncate.
-- Cocok untuk table log/history.
-- Tidak mencegah duplicate.
-- Berlaku untuk dua arah.
-
-`upsert`
-
-- Load staging lalu `INSERT ... ON CONFLICT`.
-- Wajib `key_columns`.
-- PostgreSQL harus punya unique index/constraint sesuai key.
-- Untuk PostgreSQL ke Oracle, memakai Oracle `MERGE`.
-
-`delete`
-
-- Khusus PostgreSQL ke Oracle.
-- Menjalankan `DELETE FROM target` lalu insert ulang.
-- Bisa rollback dalam transaction, tapi lebih berat daripada truncate.
-
-## 13. Output Folder
-
-Semua output masuk ke folder dari `reports.output_dir`, default:
-
-```text
-reports/
-```
-
-File credential tidak pernah ditulis ke report.
+- existing CLI names are preserved
+- dry-run remains the default
+- reports sanitize config output before writing
+- sync and checksum code use streaming/batched reads rather than `fetchall` for large-row paths

@@ -39,16 +39,20 @@ jobs:
         run: python -m compileall -q oracle_pg_sync tests
 
       - name: Lint
-        run: ruff check oracle_pg_sync tests
+        run: |
+          ruff check oracle_pg_sync tests
+          black --check oracle_pg_sync tests
 
       - name: Security scan
-        run: bandit -q -r oracle_pg_sync -lll
+        run: |
+          bandit -q -r oracle_pg_sync -lll
+          pip-audit --progress-spinner off
 
-      - name: Smoke tests
-        run: python -m unittest tests.test_ops_smoke
+      - name: CLI smoke tests
+        run: pytest -q tests/test_ops_smoke.py
 
-      - name: Unit tests
-        run: python -m unittest discover -s tests
+      - name: Test suite
+        run: pytest -q
 
       - name: Validate examples
         run: |

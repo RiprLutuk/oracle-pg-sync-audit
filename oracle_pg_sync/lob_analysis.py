@@ -42,6 +42,7 @@ def _rows_for_source(config: AppConfig, table_cfg: TableConfig, table_name: str,
                 "strategy": "",
                 "validation_mode": "",
                 "warning": "",
+                "recommendation": "stream",
                 "suggestion": "No LOB column detected.",
             }
         ]
@@ -65,6 +66,7 @@ def _rows_for_source(config: AppConfig, table_cfg: TableConfig, table_name: str,
                 "strategy": policy.strategy,
                 "validation_mode": policy.validation or config.lob_strategy.validation.get("default", "size"),
                 "warning": _warning(classification, lob_columns, total_columns, type_name),
+                "recommendation": _recommendation(classification, policy.strategy),
                 "suggestion": _suggestion(classification, policy.strategy),
             }
         )
@@ -101,3 +103,15 @@ def _suggestion(classification: str, strategy: str | None) -> str:
     if strategy in {"stream", "include"}:
         return "Stream sync enabled; validate with size or size_hash."
     return f"Strategy {strategy} is configured."
+
+
+def _recommendation(classification: str, strategy: str | None) -> str:
+    if classification == "LOB-heavy":
+        return "exclude"
+    if classification == "binary-heavy":
+        return "partial_columns"
+    if strategy in {"stream", "include"}:
+        return "stream"
+    if strategy == "skip":
+        return "partial_columns"
+    return "stream"

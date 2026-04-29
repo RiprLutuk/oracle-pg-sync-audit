@@ -1,187 +1,70 @@
 # Developer Guide
 
-Panduan ini untuk developer yang ingin mengubah atau memperluas project.
+## Repository Layout
 
-## Struktur Modul
+- `oracle_pg_sync/cli.py`: primary CLI
+- `oracle_pg_sync/ops.py`: operator-friendly wrapper commands
+- `oracle_pg_sync/sync/`: direction-specific sync implementations
+- `oracle_pg_sync/db/`: Oracle and PostgreSQL database helpers
+- `oracle_pg_sync/metadata/`: metadata fetch and compare logic
+- `oracle_pg_sync/schema/type_compat.py`: smart schema diff compatibility engine
+- `oracle_pg_sync/reports/`: CSV, Excel, HTML, and SQL writers
+- `oracle_pg_sync/checkpoint.py`: SQLite checkpoint and watermark store
+- `jobs/`: cron-safe shell wrappers
+- `tests/`: unit and smoke coverage
 
-```text
-oracle_pg_sync/
-  cli.py
-  config.py
-  db/
-    oracle.py
-    postgres.py
-  metadata/
-    oracle_metadata.py
-    postgres_metadata.py
-    compare.py
-    type_mapping.py
-  sync/
-    oracle_to_postgres.py
-    postgres_to_oracle.py
-    staging.py
-    copy_loader.py
-    verifier.py
-  reports/
-    writer_csv.py
-    writer_excel.py
-    writer_html.py
-  utils/
-```
+## Coding Rules In This Project
 
-## Entry Point
+- preserve existing CLI names
+- keep dry-run as the default
+- do not expose secrets in reports or manifests
+- avoid `fetchall` in large-row data paths
+- prefer batch/stream processing
 
-CLI utama:
-
-```text
-oracle_pg_sync/cli.py
-```
-
-Module execution:
+## Test Commands
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml
+pytest -q
+pytest -q tests/test_ops_smoke.py
+python tests/integration_reverse_merge_container.py
 ```
 
-Installed script:
+The PostgreSQL-backed integration probe runs only when `RUN_CONTAINER_TESTS=1`.
 
-```bash
-oracle-pg-sync-audit audit --config config.yaml
-```
+## CI
 
-## Config Flow
+The GitHub Actions workflow runs:
 
-1. `load_config()` membaca YAML/JSON.
-2. `env_file` diload jika ada.
-3. Placeholder `${VAR}` dan `${VAR:-default}` diexpand.
-4. Config diubah menjadi dataclass `AppConfig`.
+- CLI smoke checks
+- `compileall`
+- `ruff`
+- `black --check`
+- `bandit`
+- `pip-audit`
+- `pytest`
+- config example validation
 
-File:
+## Adding Diff Rules
 
-```text
-oracle_pg_sync/config.py
-```
+Smart schema diff rules live in [`oracle_pg_sync/schema/type_compat.py`](../oracle_pg_sync/schema/type_compat.py).
 
-## Metadata Flow
+When you add a rule:
 
-Oracle:
+1. classify compatibility status
+2. set severity
+3. provide a human-readable reason
+4. provide a suggested action
+5. update tests in `tests/test_compare.py` and `tests/test_type_mapping.py`
 
-```text
-metadata/oracle_metadata.py
-db/oracle.py
-```
+## Adding Reports
 
-PostgreSQL:
+Keep the centralized workbook stable. If you add a new metric or sheet:
 
-```text
-metadata/postgres_metadata.py
-db/postgres.py
-```
+1. update `writer_excel.py`
+2. update `writer_html.py` if it should be visible in HTML
+3. update `docs/REPORT_REFERENCE.md`
+4. add or update tests
 
-Compare:
+## Shell Job Changes
 
-```text
-metadata/compare.py
-metadata/type_mapping.py
-```
-
-## Sync Flow
-
-Class utama:
-
-```text
-sync/oracle_to_postgres.py
-sync/postgres_to_oracle.py
-```
-
-Flow per table:
-
-1. Fetch metadata Oracle dan PostgreSQL.
-2. Compare struktur.
-3. Skip jika mismatch fatal dan tidak `--force`.
-4. Build column mapping.
-5. Jalankan mode sync.
-6. Verify rowcount jika aktif.
-7. Tulis `sync_result.csv`.
-
-## Menambah Type Mapping
-
-Edit:
-
-```text
-metadata/type_mapping.py
-```
-
-Fungsi penting:
-
-- `is_type_compatible()`
-- `suggested_pg_type()`
-- `oracle_type_label()`
-- `pg_type_label()`
-
-Tambahkan unit test di:
-
-```text
-tests/test_type_mapping.py
-```
-
-## Menambah Field Report
-
-1. Tambahkan field di `metadata/compare.py`.
-2. Pastikan writer CSV otomatis menangkap field baru.
-3. Jika perlu tampil di HTML, edit `reports/writer_html.py`.
-4. Update `docs/REPORT_REFERENCE.md`.
-
-## Menambah Mode Sync
-
-1. Tambahkan pilihan CLI di `cli.py`.
-2. Tambahkan branch di `OracleToPostgresSync.sync_table()`.
-3. Implement method baru di `sync/oracle_to_postgres.py`.
-4. Tambahkan test unit jika bisa tanpa DB, atau integration test terpisah.
-
-## Direction Sync
-
-CLI mendukung:
-
-- `--direction oracle-to-postgres`
-- `--direction postgres-to-oracle`
-
-Resolver runner ada di:
-
-```text
-oracle_pg_sync/cli.py
-```
-
-## Test
-
-Unit test tanpa koneksi DB:
-
-```bash
-PYTHONPATH=. python -m unittest discover -s tests
-```
-
-Jika dependency dev terinstall:
-
-```bash
-pytest
-```
-
-Compile check:
-
-```bash
-python -m compileall oracle_pg_sync tests
-```
-
-CI GitHub Actions menjalankan install dependency, compile check, unit test,
-smoke test CLI, parse `config.yaml.example`, committed-secret checks, dan
-PostgreSQL service integration untuk reverse MERGE plumbing. Test Oracle
-production tetap memakai mock/stub, bukan credential Oracle real.
-
-## Style
-
-- Python 3.11+.
-- Type hints untuk fungsi baru.
-- Jangan hardcode password.
-- Jangan print credential ke log.
-- Keep destructive action explicit.
-- Tambah test untuk logic compare/type/config.
+Job logic is shared through [`jobs/common.sh`](../jobs/common.sh). Keep wrappers small and direction-aware. Any change to lock naming, retry, timeout, or logging should be covered by `tests/test_jobs.py`.

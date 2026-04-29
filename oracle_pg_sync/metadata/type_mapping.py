@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from oracle_pg_sync.schema.type_compat import assess_column_compatibility
+
 
 @dataclass(frozen=True)
 class ColumnMeta:
@@ -78,90 +80,8 @@ def oracle_type_label(col: ColumnMeta) -> str:
 
 
 def is_type_compatible(oracle: ColumnMeta, postgres: ColumnMeta) -> tuple[bool, str]:
-    odt = oracle.data_type.upper()
-    pdt = pg_type_label(postgres).upper()
-
-    if odt in {"VARCHAR", "VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR"}:
-        if any(token in pdt for token in ("VARCHAR", "CHAR", "TEXT", "BPCHAR")):
-            pg_len = _extract_length(pdt)
-            ora_len = oracle.char_length or oracle.data_length
-            if pg_len is not None and ora_len is not None and pg_len < ora_len:
-                return False, f"length Oracle {ora_len} > PostgreSQL {pg_len}"
-            return True, ""
-        return False, f"Oracle {oracle_type_label(oracle)} vs PostgreSQL {pg_type_label(postgres)}"
-
-    if odt == "NUMBER":
-        if any(token in pdt for token in ("NUMERIC", "DECIMAL")):
-            pg_precision, pg_scale = _extract_precision_scale(pdt)
-            if (
-                pg_precision is not None
-                and oracle.numeric_precision is not None
-                and pg_precision < oracle.numeric_precision
-            ):
-                return False, f"precision Oracle {oracle.numeric_precision} > PostgreSQL {pg_precision}"
-            if pg_scale is not None and oracle.numeric_scale is not None and pg_scale < oracle.numeric_scale:
-                return False, f"scale Oracle {oracle.numeric_scale} > PostgreSQL {pg_scale}"
-            return True, ""
-        if any(token in pdt for token in ("SMALLINT", "INTEGER", "INT", "BIGINT")):
-            if oracle.numeric_scale not in (None, 0):
-                return False, f"Oracle scale {oracle.numeric_scale} cannot fit integer"
-            precision = oracle.numeric_precision
-            if precision is None:
-                return True, ""
-            if ("SMALLINT" in pdt or pdt == "INT2") and precision <= 4:
-                return True, ""
-            if ("INTEGER" in pdt or pdt in {"INT", "INT4"}) and precision <= 9:
-                return True, ""
-            if ("BIGINT" in pdt or pdt == "INT8") and precision <= 18:
-                return True, ""
-            return False, f"Oracle NUMBER({precision},0) too large for {pg_type_label(postgres)}"
-        if any(token in pdt for token in ("DOUBLE", "REAL", "FLOAT")):
-            return True, ""
-        return False, f"Oracle {oracle_type_label(oracle)} vs PostgreSQL {pg_type_label(postgres)}"
-
-    if odt in {"FLOAT", "BINARY_FLOAT", "BINARY_DOUBLE"}:
-        if any(token in pdt for token in ("NUMERIC", "DECIMAL", "DOUBLE", "REAL", "FLOAT")):
-            return True, ""
-        return False, f"Oracle {odt} vs PostgreSQL {pg_type_label(postgres)}"
-
-    if odt == "DATE" or odt.startswith("TIMESTAMP"):
-        if any(token in pdt for token in ("DATE", "TIMESTAMP", "TIME")):
-            return True, ""
-        return False, f"Oracle {odt} vs PostgreSQL {pg_type_label(postgres)}"
-
-    if odt.startswith("INTERVAL"):
-        if "INTERVAL" in pdt:
-            return True, ""
-        return False, f"Oracle {odt} vs PostgreSQL {pg_type_label(postgres)}"
-
-    if odt == "BOOLEAN":
-        if "BOOL" in pdt:
-            return True, ""
-        return False, f"Oracle {odt} vs PostgreSQL {pg_type_label(postgres)}"
-
-    if odt in {"RAW", "BLOB", "LONG RAW"}:
-        if "BYTEA" in pdt:
-            return True, ""
-        return False, f"Oracle {odt} vs PostgreSQL {pg_type_label(postgres)}"
-
-    if "CLOB" in odt or odt == "LONG":
-        if any(token in pdt for token in ("TEXT", "VARCHAR")):
-            return True, ""
-        return False, f"Oracle {odt} vs PostgreSQL {pg_type_label(postgres)}"
-
-    if odt in {"ROWID", "UROWID"}:
-        if any(token in pdt for token in ("TEXT", "VARCHAR", "CHAR")):
-            return True, ""
-        return False, f"Oracle {odt} vs PostgreSQL {pg_type_label(postgres)}"
-
-    if odt in {"JSON", "XMLTYPE"}:
-        if any(token in pdt for token in ("JSON", "JSONB", "TEXT", "VARCHAR")):
-            return True, ""
-        return False, f"Oracle {odt} vs PostgreSQL {pg_type_label(postgres)}"
-
-    if odt == pdt:
-        return True, ""
-    return False, f"Oracle {oracle_type_label(oracle)} vs PostgreSQL {pg_type_label(postgres)}"
+    assessment = assess_column_compatibility(oracle, postgres)
+    return assessment.is_compatible, "" if assessment.is_compatible else assessment.reason
 
 
 def suggested_pg_type(oracle: ColumnMeta) -> str:

@@ -7,10 +7,19 @@ from oracle_pg_sync.metadata.oracle_metadata import OracleTableMetadata
 from oracle_pg_sync.metadata.postgres_metadata import PostgresTableMetadata
 from oracle_pg_sync.metadata.type_mapping import (
     ColumnMeta,
-    is_type_compatible,
     oracle_type_label,
     pg_type_label,
     suggested_pg_type,
+)
+from oracle_pg_sync.schema.type_compat import (
+    COMPATIBLE_EXACT,
+    INCOMPATIBLE,
+    SEVERITY_ERROR,
+    SEVERITY_OK,
+    SEVERITY_INFO,
+    SEVERITY_WARNING,
+    assess_column_compatibility,
+    assess_ordinal_difference,
 )
 from oracle_pg_sync.utils.naming import split_schema_table
 
@@ -45,71 +54,77 @@ def compare_table_metadata(
 
     for name in missing_in_pg:
         col = oracle_cols[name]
-        column_diff_rows.append(
-            {
-                "table_name": table.fqname,
-                "diff_type": "missing_in_postgres",
-                "column_name": name,
-                "oracle_type": oracle_type_label(col),
-                "postgres_type": "",
-                "suggested_pg_type": suggested_pg_type(col),
-            }
+        row = _diff_row(
+            table_name=table.fqname,
+            column_name=name,
+            oracle_col=col,
+            postgres_col=None,
+            diff_type="missing_in_postgres",
+            compatibility_status=INCOMPATIBLE,
+            severity=SEVERITY_ERROR,
+            reason="Column exists in Oracle but is missing in PostgreSQL.",
+            suggested_action=f"Add PostgreSQL column as {suggested_pg_type(col)}.",
         )
+        column_diff_rows.append(row)
     for name in extra_in_pg:
         col = pg_cols[name]
         column_diff_rows.append(
-            {
-                "table_name": table.fqname,
-                "diff_type": "extra_in_postgres",
-                "column_name": name,
-                "oracle_type": "",
-                "postgres_type": pg_type_label(col),
-                "suggested_pg_type": "",
-            }
+            _diff_row(
+                table_name=table.fqname,
+                column_name=name,
+                oracle_col=None,
+                postgres_col=col,
+                diff_type="extra_in_postgres",
+                compatibility_status=INCOMPATIBLE,
+                severity=SEVERITY_ERROR,
+                reason="Column exists in PostgreSQL but not in Oracle.",
+                suggested_action="Drop or ignore the PostgreSQL-only column after DBA review.",
+            )
         )
 
-    order_mismatch = False
     for name in common:
         oracle_col = oracle_cols[name]
         pg_col = pg_cols[name]
         if oracle_col.ordinal != pg_col.ordinal:
-            order_mismatch = True
             column_diff_rows.append(
-                {
-                    "table_name": table.fqname,
-                    "diff_type": "ordinal_mismatch",
-                    "column_name": name,
-                    "oracle_type": oracle_type_label(oracle_col),
-                    "postgres_type": pg_type_label(pg_col),
-                    "suggested_pg_type": "",
-                    "oracle_ordinal": oracle_col.ordinal,
-                    "postgres_ordinal": pg_col.ordinal,
-                }
+                _diff_row(
+                    table_name=table.fqname,
+                    column_name=name,
+                    oracle_col=oracle_col,
+                    postgres_col=pg_col,
+                    diff_type="ordinal_mismatch",
+                    **assess_ordinal_difference(oracle_col, pg_col).__dict__,
+                )
             )
-        compatible, reason = is_type_compatible(oracle_col, pg_col)
-        if not compatible:
-            type_mismatch_rows.append(
-                {
-                    "table_name": table.fqname,
-                    "column_name": name,
-                    "oracle_type": oracle_type_label(oracle_col),
-                    "postgres_type": pg_type_label(pg_col),
-                    "reason": reason,
-                }
+        assessment = assess_column_compatibility(oracle_col, pg_col)
+        if assessment.compatibility_status != COMPATIBLE_EXACT and assessment.severity != SEVERITY_OK:
+            row = _diff_row(
+                table_name=table.fqname,
+                column_name=name,
+                oracle_col=oracle_col,
+                postgres_col=pg_col,
+                diff_type="type_compatibility",
+                **assessment.__dict__,
             )
+            column_diff_rows.append(row)
+            if assessment.compatibility_status == INCOMPATIBLE:
+                type_mismatch_rows.append(row)
 
     row_count_match = (
         oracle_meta.row_count is not None
         and postgres_meta.row_count is not None
         and oracle_meta.row_count == postgres_meta.row_count
     )
-    column_structure_match = not missing_in_pg and not extra_in_pg and not order_mismatch
+    schema_error_count = sum(1 for row in column_diff_rows if str(row.get("severity")) == SEVERITY_ERROR)
+    schema_warning_count = sum(1 for row in column_diff_rows if str(row.get("severity")) == SEVERITY_WARNING)
+    schema_info_count = sum(1 for row in column_diff_rows if str(row.get("severity")) == SEVERITY_INFO)
+    column_structure_match = schema_error_count == 0
 
     if not oracle_meta.exists or not postgres_meta.exists:
         status = "MISSING"
-    elif type_mismatch_rows or missing_in_pg or extra_in_pg:
+    elif schema_error_count:
         status = "MISMATCH"
-    elif not row_count_match:
+    elif schema_warning_count or not row_count_match:
         status = "WARNING"
     else:
         status = "MATCH"
@@ -125,6 +140,9 @@ def compare_table_metadata(
         "postgres_column_count": len(postgres_meta.columns),
         "column_structure_match": column_structure_match,
         "type_mismatch_count": len(type_mismatch_rows),
+        "schema_diff_error_count": schema_error_count,
+        "schema_diff_warning_count": schema_warning_count,
+        "schema_diff_info_count": schema_info_count,
         "missing_columns_in_pg": ";".join(missing_in_pg),
         "extra_columns_in_pg": ";".join(extra_in_pg),
         "index_count_oracle": oracle_meta.object_counts.get("index_count_oracle", 0),
@@ -169,7 +187,33 @@ def inventory_has_fatal_mismatch(inventory_row: dict) -> bool:
     return (
         not inventory_row.get("oracle_exists")
         or not inventory_row.get("postgres_exists")
-        or bool(inventory_row.get("missing_columns_in_pg"))
-        or bool(inventory_row.get("extra_columns_in_pg"))
-        or int(inventory_row.get("type_mismatch_count") or 0) > 0
+        or int(inventory_row.get("schema_diff_error_count") or 0) > 0
     )
+
+
+def _diff_row(
+    *,
+    table_name: str,
+    column_name: str,
+    oracle_col: ColumnMeta | None,
+    postgres_col: ColumnMeta | None,
+    diff_type: str,
+    compatibility_status: str,
+    severity: str,
+    reason: str,
+    suggested_action: str,
+) -> dict:
+    return {
+        "table_name": table_name,
+        "column_name": column_name,
+        "oracle_type": oracle_type_label(oracle_col) if oracle_col else "",
+        "postgres_type": pg_type_label(postgres_col) if postgres_col else "",
+        "oracle_ordinal": oracle_col.ordinal if oracle_col else "",
+        "postgres_ordinal": postgres_col.ordinal if postgres_col else "",
+        "diff_type": diff_type,
+        "compatibility_status": compatibility_status,
+        "severity": severity,
+        "reason": reason,
+        "suggested_action": suggested_action,
+        "suggested_pg_type": suggested_pg_type(oracle_col) if oracle_col else "",
+    }

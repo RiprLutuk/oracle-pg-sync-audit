@@ -4,10 +4,12 @@ CONFIG_PATH=/home/app/oracle-pg-sync-audit/config.yaml
 # Optional alert command. It receives ALERT_MESSAGE in the environment.
 # ALERT_COMMAND='printf "%s\n" "$ALERT_MESSAGE" | mail -s "oracle-pg-sync failed" dba@example.com'
 
-# Full dependency-safe refresh once per day.
-15 1 * * * cd /home/app/oracle-pg-sync-audit && jobs/daily.sh
+# Full dependency-safe refresh once per day in both directions.
+15 1 * * * cd /home/app/oracle-pg-sync-audit && jobs/daily.sh oracle_to_pg
+45 1 * * * cd /home/app/oracle-pg-sync-audit && jobs/daily.sh pg_to_oracle
 
-# Incremental upsert every five minutes. Keep table-specific key/filter rules here.
-*/5 * * * * cd /home/app/oracle-pg-sync-audit && jobs/reverse_address_5min.example.sh
+# Incremental sync every five minutes in both directions.
+*/5 * * * * cd /home/app/oracle-pg-sync-audit && jobs/incremental.sh oracle_to_pg
+*/5 * * * * cd /home/app/oracle-pg-sync-audit && jobs/incremental.sh pg_to_oracle --tables public.address --mode upsert --key-columns address_id --incremental-column last_update
 
-# Copy the example wrapper per reverse table when key/filter rules differ.
+# Copy table-specific wrappers when reverse incremental filters differ by table.

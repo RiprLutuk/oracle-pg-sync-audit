@@ -3,9 +3,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from oracle_pg_sync.checkpoint import CheckpointStore
+from oracle_pg_sync.checkpoint import CheckpointStore, Chunk
 from oracle_pg_sync.config import AppConfig, IncrementalConfig, OracleConfig, PostgresConfig, TableConfig
 from oracle_pg_sync.db import oracle
+from oracle_pg_sync.metadata.type_mapping import ColumnMeta
 from oracle_pg_sync.sync.postgres_to_oracle import PostgresToOracleSync, _apply_checksum_summary
 
 
@@ -202,6 +203,88 @@ class PostgresToOracleSyncTest(unittest.TestCase):
 
         self.assertEqual(count, 1)
         self.assertEqual(calls, ["truncate", "insert"])
+
+    def test_reverse_delete_deletes_before_insert(self):
+        class RowsCursor:
+            def __init__(self):
+                self.rows = [[(1, "Alice")], []]
+
+            def fetchmany(self, size):
+                return self.rows.pop(0)
+
+        sync = PostgresToOracleSync(AppConfig(oracle=OracleConfig(schema="APP"), postgres=PostgresConfig(schema="public")))
+        calls = []
+
+        with patch(
+            "oracle_pg_sync.sync.postgres_to_oracle.oracle.delete_rows",
+            side_effect=lambda *args, **kwargs: calls.append("delete"),
+        ), patch("oracle_pg_sync.sync.postgres_to_oracle.postgres.select_rows", return_value=RowsCursor()), patch(
+            "oracle_pg_sync.sync.postgres_to_oracle.oracle.insert_rows",
+            side_effect=lambda *args, **kwargs: calls.append("insert") or len(kwargs["rows"]),
+        ):
+            count = sync._sync_delete(
+                object(),
+                object(),
+                "public",
+                "sample",
+                "APP",
+                [("id", "id"), ("name", "name")],
+                None,
+            )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(calls, ["delete", "insert"])
+
+    def test_resume_skips_successful_reverse_chunk(self):
+        class Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def cursor(self):
+                return self
+
+            def commit(self):
+                return None
+
+            def rollback(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = CheckpointStore(Path(tmp) / "checkpoint.sqlite3")
+            store.create_run(run_id="run1", direction="postgres_to_oracle", source_db="public", target_db="APP")
+            store.ensure_chunk(
+                run_id="run1",
+                direction="postgres_to_oracle",
+                source_db="public",
+                target_db="APP",
+                chunk=Chunk(table_name="public.sample", chunk_key="full"),
+            )
+            store.finish_chunk("run1", "public.sample", "full", status="success", rows_attempted=1, rows_success=1)
+            sync = PostgresToOracleSync(AppConfig(oracle=OracleConfig(schema="APP"), postgres=PostgresConfig(schema="public")))
+
+            with patch("oracle_pg_sync.sync.postgres_to_oracle.oracle.connect", return_value=Conn()), patch(
+                "oracle_pg_sync.sync.postgres_to_oracle.postgres.connect",
+                return_value=Conn(),
+            ), patch(
+                "oracle_pg_sync.sync.postgres_to_oracle.fetch_oracle_metadata",
+                return_value=type("Meta", (), {"exists": True, "row_count": 1, "columns": [ColumnMeta('ID', 1, 'NUMBER')], "object_counts": {}})(),
+            ), patch(
+                "oracle_pg_sync.sync.postgres_to_oracle.fetch_pg_metadata",
+                return_value=type("Meta", (), {"exists": True, "row_count": 1, "columns": [ColumnMeta('id', 1, 'integer', udt_name='int4')], "object_counts": {}})(),
+            ):
+                result = sync.sync_table(
+                    "public.sample",
+                    execute=True,
+                    checkpoint_store=store,
+                    run_id="run1",
+                    resume=True,
+                )
+
+        self.assertEqual(result.status, "SKIPPED")
+        self.assertIn("checkpoint chunk full sudah success", result.message)
 
 
 if __name__ == "__main__":

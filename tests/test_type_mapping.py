@@ -79,6 +79,21 @@ class TypeMappingTest(unittest.TestCase):
             with self.subTest(oracle=oracle.data_type, postgres=postgres.data_type):
                 self.assertTrue(is_type_compatible(oracle, postgres)[0])
 
+    def test_oracle_date_and_postgres_timestamp_are_compatible(self):
+        oracle = ColumnMeta(name="created_at", ordinal=1, data_type="DATE")
+        postgres = ColumnMeta(name="created_at", ordinal=1, data_type="timestamp without time zone", udt_name="timestamp")
+
+        self.assertTrue(is_type_compatible(oracle, postgres)[0])
+
+    def test_oracle_date_and_postgres_date_are_not_compatible(self):
+        oracle = ColumnMeta(name="created_at", ordinal=1, data_type="DATE")
+        postgres = ColumnMeta(name="created_at", ordinal=1, data_type="date", udt_name="date")
+
+        ok, reason = is_type_compatible(oracle, postgres)
+
+        self.assertFalse(ok)
+        self.assertIn("loses", reason)
+
 
 if __name__ == "__main__":
     unittest.main()

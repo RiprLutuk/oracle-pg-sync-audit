@@ -29,7 +29,22 @@ class WriterHtmlTest(unittest.TestCase):
             write_html_report(
                 path,
                 inventory_rows=[{"table_name": "public.sample", "status": "MISMATCH"}],
-                column_diff_rows=[],
+                column_diff_rows=[
+                    {
+                        "table_name": "public.sample",
+                        "column_name": "created_at",
+                        "diff_type": "ordinal_mismatch",
+                        "severity": "INFO",
+                        "compatibility_status": "compatible_with_warning",
+                    },
+                    {
+                        "table_name": "public.sample",
+                        "column_name": "id",
+                        "diff_type": "type_compatibility",
+                        "severity": "ERROR",
+                        "compatibility_status": "incompatible",
+                    },
+                ],
                 lob_rows=[
                     {
                         "table_name": "public.lob_sample",
@@ -54,6 +69,8 @@ class WriterHtmlTest(unittest.TestCase):
         self.assertIn("status-mismatch", html)
         self.assertIn("heavy", html)
         self.assertIn("Dependency Summary", html)
+        self.assertIn("Hide INFO rows", html)
+        self.assertIn("severity-error", html)
 
 
 if __name__ == "__main__":

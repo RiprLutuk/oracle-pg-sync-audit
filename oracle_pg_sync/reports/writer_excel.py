@@ -49,15 +49,16 @@ def write_central_report_xlsx(
     watermark_rows = watermark_rows or []
     checkpoint_rows = checkpoint_rows or []
     table_status_rows = sync_rows or inventory_rows
+    combined_column_diff_rows = _combine_column_diff_rows(column_diff_rows, type_mismatch_rows)
     rowcount_rows = _rowcount_rows(sync_rows, inventory_rows)
-    error_rows = _error_rows(sync_rows, maintenance_rows)
+    error_rows = _error_rows(sync_rows, maintenance_rows, combined_column_diff_rows)
     sheets = {
-        "00_Dashboard": [_dashboard_row(table_status_rows, checksum_rows, watermark_rows, checkpoint_rows, lob_rows)],
-        "01_Run_Summary": [_run_summary_row(table_status_rows, checksum_rows, watermark_rows, checkpoint_rows)],
+        "00_Dashboard": [_dashboard_row(table_status_rows, checksum_rows, watermark_rows, checkpoint_rows, lob_rows, combined_column_diff_rows)],
+        "01_Run_Summary": [_run_summary_row(table_status_rows, checksum_rows, watermark_rows, checkpoint_rows, combined_column_diff_rows)],
         "02_Table_Sync_Status": table_status_rows,
         "03_Rowcount_Compare": rowcount_rows,
         "04_Checksum_Result": checksum_rows,
-        "05_Column_Diff": column_diff_rows + type_mismatch_rows,
+        "05_Column_Diff": combined_column_diff_rows,
         "06_Index_Compare": _filter_dependency_rows(dependency_rows, {"INDEX"}),
         "07_Object_Dependency": _object_dependency_sheet_rows(dependency_rows, dependency_summary_rows),
         "08_LOB_Columns": lob_rows,
@@ -82,12 +83,17 @@ def _dashboard_row(
     watermark_rows: list[dict],
     checkpoint_rows: list[dict],
     lob_rows: list[dict] | None = None,
+    column_diff_rows: list[dict] | None = None,
 ) -> dict[str, Any]:
     lob_rows = lob_rows or []
+    column_diff_rows = column_diff_rows or []
     return {
         "total_tables": len(table_rows),
         "success": sum(1 for row in table_rows if str(row.get("status", "")).upper() in {"SUCCESS", "MATCH"}),
         "failed": sum(1 for row in table_rows if str(row.get("status", "")).upper() in {"FAILED", "MISMATCH", "MISSING"}),
+        "schema_diff_error": sum(1 for row in column_diff_rows if str(row.get("severity", "")).upper() == "ERROR"),
+        "schema_diff_warning": sum(1 for row in column_diff_rows if str(row.get("severity", "")).upper() == "WARNING"),
+        "schema_diff_info": sum(1 for row in column_diff_rows if str(row.get("severity", "")).upper() == "INFO"),
         "checksum_pass": sum(1 for row in checksum_rows if row.get("status") == "MATCH"),
         "checksum_fail": sum(1 for row in checksum_rows if row.get("status") == "MISMATCH"),
         "rows_processed": sum(int(row.get("rows_loaded") or 0) for row in table_rows),
@@ -103,8 +109,9 @@ def _run_summary_row(
     checksum_rows: list[dict],
     watermark_rows: list[dict],
     checkpoint_rows: list[dict],
+    column_diff_rows: list[dict] | None = None,
 ) -> dict[str, Any]:
-    row = _dashboard_row(table_rows, checksum_rows, watermark_rows, checkpoint_rows)
+    row = _dashboard_row(table_rows, checksum_rows, watermark_rows, checkpoint_rows, None, column_diff_rows)
     row["duration_seconds"] = round(sum(float(item.get("elapsed_seconds") or 0) for item in table_rows), 3)
     row["warning"] = sum(1 for item in table_rows if str(item.get("status", "")).upper() == "WARNING")
     row["dry_run"] = sum(1 for item in table_rows if str(item.get("status", "")).upper() == "DRY_RUN")
@@ -160,12 +167,21 @@ def _rows_per_second(row: dict) -> float | None:
     return round(float(row.get("rows_loaded") or 0) / elapsed, 3)
 
 
-def _error_rows(sync_rows: list[dict], maintenance_rows: list[dict]) -> list[dict]:
+def _error_rows(sync_rows: list[dict], maintenance_rows: list[dict], column_diff_rows: list[dict]) -> list[dict]:
     rows = [
         {"table_name": row.get("table_name"), "source": "sync", "message": row.get("message")}
         for row in sync_rows
         if row.get("message")
     ]
+    rows.extend(
+        {
+            "table_name": row.get("table_name"),
+            "source": "schema_diff",
+            "message": row.get("reason"),
+        }
+        for row in column_diff_rows
+        if str(row.get("severity", "")).upper() == "ERROR"
+    )
     rows.extend(
         {
             "table_name": row.get("table_name"),
@@ -189,6 +205,8 @@ def _format_sheet(worksheet) -> None:
         "MISMATCH": PatternFill("solid", fgColor="FFC7CE"),
         "WARNING": PatternFill("solid", fgColor="FFEB9C"),
         "SKIPPED": PatternFill("solid", fgColor="FFEB9C"),
+        "INFO": PatternFill("solid", fgColor="D9EAF7"),
+        "ERROR": PatternFill("solid", fgColor="FFC7CE"),
     }
     for row in worksheet.iter_rows(min_row=2):
         for cell in row:
@@ -214,6 +232,18 @@ def _flatten_config(value: dict[str, Any], prefix: str = "") -> list[dict[str, A
 
 def _dataframe(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame([_excel_safe_row(row) for row in rows])
+
+
+def _combine_column_diff_rows(column_diff_rows: list[dict], type_mismatch_rows: list[dict]) -> list[dict]:
+    combined: list[dict] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for row in [*(column_diff_rows or []), *(type_mismatch_rows or [])]:
+        marker = tuple(sorted((str(key), str(value)) for key, value in row.items()))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        combined.append(row)
+    return combined
 
 
 def _excel_safe_row(row: dict) -> dict:

@@ -281,6 +281,17 @@ def _check_oracle(config) -> tuple[str, str, str]:
             with con.cursor() as cur:
                 cur.execute("SELECT 1 FROM DUAL")
                 cur.fetchone()
+                cur.execute(
+                    """
+                    SELECT COUNT(1)
+                    FROM ALL_TAB_COLUMNS
+                    WHERE OWNER = :owner
+                    """,
+                    {"owner": config.oracle.schema.upper()},
+                )
+                visible = int(cur.fetchone()[0] or 0)
+        if visible <= 0:
+            return ("oracle_connection", "WARNING", f"connected but no visible columns under schema {config.oracle.schema}")
         return ("oracle_connection", "OK", "connected")
     except Exception as exc:
         return ("oracle_connection", "ERROR", str(exc))
@@ -298,6 +309,8 @@ def _check_postgres(config) -> list[tuple[str, str, str]]:
                 pgcrypto = cur.fetchone() is not None
                 cur.execute("SELECT has_schema_privilege(current_user, %s, 'USAGE')", (config.postgres.schema,))
                 schema_usage = bool(cur.fetchone()[0])
+                cur.execute("SELECT has_schema_privilege(current_user, %s, 'CREATE')", (config.postgres.schema,))
+                schema_create = bool(cur.fetchone()[0])
         ext_status = "OK" if pgcrypto else "WARNING"
         ext_message = "pgcrypto installed" if pgcrypto else "pgcrypto extension not installed"
         privilege_status = "OK" if schema_usage else "ERROR"
@@ -310,12 +323,22 @@ def _check_postgres(config) -> list[tuple[str, str, str]]:
             ("postgres_connection", "OK", "connected"),
             ("postgres_pgcrypto", ext_status, ext_message),
             ("postgres_privileges", privilege_status, privilege_message),
+            (
+                "postgres_create_privilege",
+                "OK" if schema_create else "WARNING",
+                (
+                    f"CREATE on schema {config.postgres.schema}"
+                    if schema_create
+                    else f"missing CREATE on schema {config.postgres.schema}; staging/swap workflows may be limited"
+                ),
+            ),
         ]
     except Exception as exc:
         return [
             ("postgres_connection", "ERROR", str(exc)),
             ("postgres_pgcrypto", "WARNING", "skipped"),
             ("postgres_privileges", "WARNING", "skipped"),
+            ("postgres_create_privilege", "WARNING", "skipped"),
         ]
 
 

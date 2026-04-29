@@ -1,378 +1,153 @@
 # Report Reference
 
-Semua output eksekusi masuk ke folder `reports/run_<timestamp>_<run_id>/`
-kecuali `reports.output_dir` diubah. Root `reports/` hanya dipakai untuk
-checkpoint, lock, log runtime global, dan kumpulan run folder.
+Every run writes to:
+
+```text
+reports/run_<timestamp>_<run_id>/
+```
+
+The workbook name is `report.xlsx` and the HTML dashboard is `report.html`.
+
+## Standard Files
+
+- `manifest.json`: sanitized run metadata and file inventory
+- `inventory_summary.csv`: per-table audit summary
+- `column_diff.csv`: smart schema diff rows
+- `type_mismatch.csv`: incompatible type-only subset
+- `sync_result.csv`: per-table sync results
+- `validation_checksum.csv`: checksum output when enabled
+- `dependency_pre.csv`: dependency graph before sync/repair
+- `dependency_post.csv`: dependency graph after sync/repair
+- `dependency_maintenance.csv`: refresh/recompile/validation actions
+- `dependency_summary.csv`: rolled-up dependency health
+- `lob_analysis.csv`: LOB analysis command output
+- `schema_suggestions.sql`: add/drop column suggestions from audit diff rows
+- `logs.txt`: captured run log
+
+## Excel Workbook
+
+Sheets are fixed:
+
+1. `00_Dashboard`
+2. `01_Run_Summary`
+3. `02_Table_Sync_Status`
+4. `03_Rowcount_Compare`
+5. `04_Checksum_Result`
+6. `05_Column_Diff`
+7. `06_Index_Compare`
+8. `07_Object_Dependency`
+9. `08_LOB_Columns`
+10. `09_Failed_Tables`
+11. `10_Watermark`
+12. `11_Checkpoint`
+13. `12_Performance`
+14. `13_Errors`
+15. `14_Config`
 
-## Daftar File
+### `00_Dashboard`
+
+Top-level run metrics:
+
+- total tables
+- success count
+- failed count
+- schema diff `ERROR` count
+- schema diff `WARNING` count
+- schema diff `INFO` count
+- checksum pass/fail
+- rows processed
+- watermark updates
+- resume usage
+- LOB-heavy table count
+- slow-table count
 
-`run_<timestamp>_<run_id>/inventory_summary.csv`
+### `05_Column_Diff`
 
-- Summary utama per table.
-- Dipakai untuk melihat status final table.
+Columns:
 
-`run_<timestamp>_<run_id>/inventory_summary.xlsx`
+- `table_name`
+- `column_name`
+- `oracle_type`
+- `postgres_type`
+- `oracle_ordinal`
+- `postgres_ordinal`
+- `diff_type`
+- `compatibility_status`
+- `severity`
+- `reason`
+- `suggested_action`
+- `suggested_pg_type`
 
-- Versi Excel dari inventory summary.
-- Cocok untuk review DBA/non-developer.
+## Severity Model
 
-`run_<timestamp>_<run_id>/column_diff.csv`
+Compatibility statuses:
 
-- Daftar missing column, extra column, dan ordinal mismatch.
+- `compatible_exact`
+- `compatible`
+- `compatible_with_warning`
+- `incompatible`
 
-`run_<timestamp>_<run_id>/type_mismatch.csv`
+Severities:
 
-- Daftar tipe data yang dianggap tidak compatible.
+- `OK`
+- `INFO`
+- `WARNING`
+- `ERROR`
 
-`run_<timestamp>_<run_id>/object_dependency_summary.csv`
+Current interpretation:
 
-- Object terkait table dari Oracle dan PostgreSQL.
-- Berisi view, procedure, function, package, atau dependency lain yang terdeteksi.
+- `INFO` = valid difference that should not fail the table
+- `WARNING` = technically loadable but review is advised
+- `ERROR` = real mismatch or broken dependency
 
-`run_<timestamp>_<run_id>/dependency_summary.csv`
+## Mismatch vs Compatible
 
-- Ringkasan dependency per phase/source/table.
-- Berisi `object_count`, `broken_count`, `invalid_count`, `missing_count`,
-  dan `failed_count`.
-- Dipakai oleh manifest, `report.xlsx`, dan `report.html` untuk dependency health.
+A table is counted as `MISMATCH` when the audit summary has schema diff `ERROR` rows or a table is missing.
 
-`run_<timestamp>_<run_id>/object_inventory.csv`
+Examples that are not counted as mismatches:
 
-- Inventory object schema dari `audit-objects`.
-- Berisi view, materialized view, sequence, procedure, function, package, trigger, synonym.
+- column ordinal changes only
+- Oracle `DATE` vs PostgreSQL `timestamp`
+- compatible aliases such as Oracle `VARCHAR2` vs PostgreSQL `varchar`
 
-`run_<timestamp>_<run_id>/object_compare.csv`
+Examples that are counted as mismatches:
 
-- Hasil compare object schema Oracle vs PostgreSQL dari `audit-objects`.
-- Status: `MATCH`, `MISSING_IN_ORACLE`, atau `MISSING_IN_POSTGRES`.
-- PostgreSQL extension-owned objects di-skip secara default; pakai `--include-extension-objects` jika perlu.
+- missing column in PostgreSQL
+- extra column in PostgreSQL when compared to Oracle
+- narrower PostgreSQL numeric/character target type
+- incompatible LOB target type
 
-`run_<timestamp>_<run_id>/sync_result.csv`
+## HTML Dashboard
 
-- Hasil command sync.
-- Ada status per table: `DRY_RUN`, `SUCCESS`, `WARNING`, `SKIPPED`, `FAILED`.
+The HTML report:
 
-`run_<timestamp>_<run_id>/logs.txt`
+- links to `manifest.json` and `report.xlsx`
+- highlights `ERROR` rows
+- filters by table status and severity
+- hides `INFO` diff rows by default
+- shows dependency, checksum, LOB, and sync problem sections
 
-- Log runtime.
-- Dipakai untuk investigasi error.
+## Dependency Reporting
 
-`run_<timestamp>_<run_id>/validation_checksum.csv`
+Dependency sheets and CSVs use:
 
-- Hasil checksum validation jika fitur checksum aktif.
-- Field penting: `table_name`, `chunk_key`, `source_hash`, `target_hash`, `row_count_source`, `row_count_target`, `status`.
+- `broken_count`
+- `invalid_count`
+- `missing_count`
+- `failed_count`
 
-`run_<timestamp>_<run_id>/manifest.json`
+When `dependency.fail_on_broken_dependency` is enabled, any critical dependency rows can make an execute or repair run exit non-zero.
 
-- Manifest durable setiap audit/sync/all.
-- Berisi run id, command, durasi, git commit, config hash, scope table,
-  rows summary, checksum/lob summary, checkpoint path, report files, dan errors.
-- Password/secret tidak ditulis.
+## LOB Reporting
 
-`run_<timestamp>_<run_id>/report.xlsx`
+LOB analysis and sync rows show:
 
-- Centralized Excel workbook untuk audit/sync run.
-- Header frozen, auto-filter aktif, width kolom otomatis, dan status penting diberi warna.
-- Tidak menulis password/secret atau raw LOB content.
+- LOB classification: `normal`, `LOB-heavy`, `binary-heavy`
+- source/target type
+- strategy
+- validation mode
+- recommendation: `exclude`, `partial_columns`, `stream`
 
-Sheet:
+## Watermarks And Checkpoints
 
-- `00_Dashboard`: ringkasan total table, success/failed, checksum, row processed, watermark, dan resume usage.
-- `01_Run_Summary`: summary run dengan duration, warning, dan dry-run count.
-- `02_Table_Sync_Status`: status per table dari sync atau inventory audit.
-- `03_Rowcount_Compare`: rowcount Oracle/PostgreSQL dan status match.
-- `04_Checksum_Result`: hasil checksum table/chunk.
-- `05_Column_Diff`: missing/extra/ordinal/type mismatch.
-- `06_Index_Compare`: dependency/index rows yang terdeteksi.
-- `07_Object_Dependency`: dependency summary plus view, materialized view,
-  procedure, function, package, dan sequence dependency.
-- `08_LOB_Columns`: kolom LOB dari sync atau `ops analyze lob`, strategy,
-  target type, validation mode, classification, warning, dan recommendation.
-- `09_Failed_Tables`: table dengan status `FAILED`, `MISMATCH`, atau `MISSING`.
-- `10_Watermark`: watermark tersimpan saat run ditulis.
-- `11_Checkpoint`: chunk/checkpoint status.
-- `12_Performance`: elapsed time, rows loaded, dan rows/second.
-- `13_Errors`: error sync dan dependency maintenance.
-- `14_Config`: config sanitized untuk audit trail.
-
-`run_<timestamp>_<run_id>/report.html`
-
-- Dashboard HTML per run.
-- Berisi link lokal ke `report.xlsx` dan `manifest.json`.
-
-## inventory_summary.csv
-
-Field:
-
-`table_name`
-
-- Nama table PostgreSQL dalam format `schema.table`.
-
-`oracle_exists`
-
-- `true` jika table Oracle ada.
-
-`postgres_exists`
-
-- `true` jika table PostgreSQL ada.
-
-`oracle_row_count`
-
-- Rowcount Oracle.
-- Bisa exact atau fast count tergantung config/flag.
-
-`postgres_row_count`
-
-- Rowcount PostgreSQL.
-- Bisa exact atau fast count tergantung config/flag.
-
-`row_count_match`
-
-- `true` jika rowcount Oracle dan PostgreSQL sama.
-
-`oracle_column_count`
-
-- Jumlah kolom Oracle.
-
-`postgres_column_count`
-
-- Jumlah kolom PostgreSQL.
-
-`column_structure_match`
-
-- `true` jika tidak ada missing/extra column dan ordinal sama.
-
-`type_mismatch_count`
-
-- Jumlah kolom yang tipe datanya tidak compatible.
-
-`missing_columns_in_pg`
-
-- Kolom Oracle yang tidak ditemukan di PostgreSQL.
-
-`extra_columns_in_pg`
-
-- Kolom PostgreSQL yang tidak ditemukan di Oracle.
-
-`index_count_oracle`
-
-- Jumlah index Oracle pada table.
-
-`index_count_postgres`
-
-- Jumlah index PostgreSQL pada table.
-
-`view_count_related_oracle`
-
-- Jumlah Oracle view terkait.
-
-`view_count_related_postgres`
-
-- Jumlah PostgreSQL view/materialized view terkait.
-
-`sequence_count_oracle`
-
-- Jumlah sequence Oracle yang namanya terkait table.
-
-`sequence_count_postgres`
-
-- Jumlah sequence PostgreSQL yang namanya terkait table.
-
-`stored_procedure_count_related_oracle`
-
-- Jumlah procedure/package Oracle terkait.
-
-`function_count_related_postgres`
-
-- Jumlah function PostgreSQL terkait.
-
-`trigger_count_oracle`
-
-- Jumlah trigger Oracle pada table.
-
-`trigger_count_postgres`
-
-- Jumlah trigger PostgreSQL pada table.
-
-`constraint_count_oracle`
-
-- Jumlah constraint Oracle pada table.
-
-`constraint_count_postgres`
-
-- Jumlah constraint PostgreSQL pada table.
-
-`status`
-
-- Status final audit.
-
-## Status Audit
-
-`MATCH`
-
-- Table ada di Oracle dan PostgreSQL.
-- Struktur kolom match.
-- Tipe compatible.
-- Rowcount match.
-
-`WARNING`
-
-- Struktur match, tapi rowcount tidak match.
-- Bisa juga terjadi jika count tidak tersedia lengkap.
-- Perlu review sebelum dianggap sukses.
-
-`MISMATCH`
-
-- Ada missing column, extra column, atau type mismatch.
-- Sync default akan skip table ini kecuali `--force`.
-
-`MISSING`
-
-- Table tidak ada di salah satu database.
-
-## column_diff.csv
-
-Field:
-
-`table_name`
-
-- Table yang dibandingkan.
-
-`diff_type`
-
-- `missing_in_postgres`: kolom ada di Oracle tapi tidak ada di PostgreSQL.
-- `extra_in_postgres`: kolom ada di PostgreSQL tapi tidak ada di Oracle.
-- `ordinal_mismatch`: posisi kolom berbeda.
-
-`column_name`
-
-- Nama kolom normalized.
-
-`oracle_type`
-
-- Tipe Oracle.
-
-`postgres_type`
-
-- Tipe PostgreSQL.
-
-`suggested_pg_type`
-
-- Saran tipe PostgreSQL jika kolom perlu dibuat.
-
-## schema_suggestions.sql
-
-File ini dibuat otomatis dari `column_diff.csv`.
-
-- `missing_in_postgres` menjadi saran `ALTER TABLE ... ADD COLUMN`.
-- `extra_in_postgres` hanya menjadi `ALTER TABLE ... DROP COLUMN` jika audit dijalankan dengan `--suggest-drop`.
-- Review manual tetap wajib sebelum SQL dijalankan di production.
-
-## type_mismatch.csv
-
-Field:
-
-`table_name`
-
-- Table yang dibandingkan.
-
-`column_name`
-
-- Kolom yang mismatch.
-
-`oracle_type`
-
-- Tipe Oracle.
-
-`postgres_type`
-
-- Tipe PostgreSQL.
-
-`reason`
-
-- Alasan mismatch.
-
-## sync_result.csv
-
-Field:
-
-`table_name`
-
-- Table yang disync.
-
-`mode`
-
-- Mode sync yang dipakai.
-
-`direction`
-
-- Arah sync: `oracle-to-postgres` atau `postgres-to-oracle`.
-
-`status`
-
-- `DRY_RUN`, `SUCCESS`, `WARNING`, `SKIPPED`, atau `FAILED`.
-
-`rows_loaded`
-
-- Jumlah row yang dikirim ke PostgreSQL.
-
-`oracle_row_count`
-
-- Exact count Oracle setelah load jika verification aktif.
-
-`postgres_row_count`
-
-- Exact count PostgreSQL setelah load jika verification aktif.
-
-`row_count_match`
-
-- Hasil verifikasi exact count.
-
-`dry_run`
-
-- `true` jika tidak ada perubahan data.
-
-`message`
-
-- Pesan tambahan atau error.
-
-`elapsed_seconds`
-
-- Durasi proses table.
-
-Field tambahan production safety:
-
-- `run_id`
-- `checksum_status`
-- `lob_columns_detected`
-- `lob_strategy_applied`
-- `lob_columns_skipped`
-- `lob_columns_nullified`
-
-## Cara Review Report
-
-Urutan review yang disarankan:
-
-1. Buka `report.html`.
-2. Cek jumlah `MISMATCH` dan `MISSING`.
-3. Buka `column_diff.csv` untuk mismatch struktur.
-4. Buka `type_mismatch.csv` untuk mismatch tipe.
-5. Buka `sync_result.csv` untuk table gagal sync.
-6. Untuk table critical, validasi rowcount exact.
-
-## Fuzzy Type Compatibility
-
-Contoh yang dianggap compatible:
-
-- Oracle `VARCHAR2(50)` ke PostgreSQL `varchar(100)` atau `text`.
-- Oracle `NUMBER(9,0)` ke PostgreSQL `integer`.
-- Oracle `NUMBER(18,0)` ke PostgreSQL `bigint`.
-- Oracle `DATE` ke PostgreSQL `timestamp`.
-- Oracle `CLOB` ke PostgreSQL `text`.
-- Oracle `BLOB` atau `RAW` ke PostgreSQL `bytea`.
-
-Contoh yang dianggap mismatch:
-
-- Oracle `VARCHAR2(100)` ke PostgreSQL `varchar(50)`.
-- Oracle `NUMBER(18,0)` ke PostgreSQL `integer`.
-- Oracle `NUMBER(10,2)` ke PostgreSQL `integer`.
+`10_Watermark` and `11_Checkpoint` are pulled from the SQLite checkpoint store. They are the operational view for resume and incremental state.
