@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -113,13 +114,28 @@ class SyncExecutionContext(BaseExecutionContext):
 
     @contextmanager
     def postgres_connection(self):
+        connection_context = None
         try:
-            with self._postgres_pool.connection() as con:
-                yield con
+            def acquire_connection():
+                nonlocal connection_context
+                current_context = self._postgres_pool.connection()
+                con = current_context.__enter__()
+                connection_context = current_context
+                return con
+
+            con = _connect_with_retry(
+                acquire_connection,
+                logger=self.logger,
+                label="PostgreSQL pooled connection",
+            )
+            yield con
         except Exception as exc:
             if _is_pool_timeout(exc):
                 self.logger.warning("PostgreSQL pool wait exceeded max_db_connections=%s", self.max_db_connections)
             raise
+        finally:
+            if connection_context is not None:
+                connection_context.__exit__(*sys.exc_info())
 
     def allow_table_parallelism(self, table_count: int) -> bool:
         if not self.parallel_tables or table_count <= 1:

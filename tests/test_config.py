@@ -35,6 +35,35 @@ postgres:
         self.assertEqual(config.postgres.host, "pg-from-dotenv")
         self.assertEqual(config.postgres.user, "dotenv-user")
 
+    def test_dotenv_is_loaded_from_config_directory_when_cwd_differs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            other = Path(tmp) / "other"
+            root.mkdir()
+            other.mkdir()
+            (root / ".env").write_text("PG_HOST=pg-from-config-dir\n", encoding="utf-8")
+            (other / ".env").write_text("PG_HOST=pg-from-cwd\n", encoding="utf-8")
+            path = root / "config.yaml"
+            path.write_text(
+                """
+oracle:
+  schema: APP
+postgres:
+  host: ${PG_HOST}
+""",
+                encoding="utf-8",
+            )
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(other)
+                with patch.dict(os.environ, {}, clear=True):
+                    config = load_config(path)
+            finally:
+                os.chdir(cwd)
+
+        self.assertEqual(config.postgres.host, "pg-from-config-dir")
+
     def test_missing_env_var_fails_fast(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -107,6 +136,34 @@ postgres:
 
             with patch.dict(os.environ, {}, clear=True):
                 config = load_config(path, env_file=env_file)
+
+        self.assertEqual(config.postgres.host, "pg-prod")
+
+    def test_relative_custom_env_file_is_loaded_from_config_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            other = Path(tmp) / "other"
+            root.mkdir()
+            other.mkdir()
+            (root / ".env.prod").write_text("PG_HOST=pg-prod\n", encoding="utf-8")
+            path = root / "config.yaml"
+            path.write_text(
+                """
+oracle:
+  schema: APP
+postgres:
+  host: ${PG_HOST}
+""",
+                encoding="utf-8",
+            )
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(other)
+                with patch.dict(os.environ, {}, clear=True):
+                    config = load_config(path, env_file=".env.prod")
+            finally:
+                os.chdir(cwd)
 
         self.assertEqual(config.postgres.host, "pg-prod")
 

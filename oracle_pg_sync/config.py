@@ -362,26 +362,22 @@ def load_environment(env_file: str | Path | None = None, *, config_path: Path | 
         load_dotenv = None
 
     if env_file:
-        path = Path(env_file)
-        if not path.is_absolute() and config_path is not None:
-            path = config_path.parent / path
+        path = _resolve_env_file(Path(env_file), config_path=config_path)
         if not path.exists():
             raise RuntimeError(f"Environment file not found: {path}")
         loaded = load_dotenv(path, override=False) if load_dotenv else _load_simple_dotenv(path)
         _LAST_ENV_FILE = path
-        _LAST_ENV_LOADED = bool(loaded)
+        _LAST_ENV_LOADED = bool(loaded) or path.exists()
         return _LAST_ENV_LOADED
 
-    default_path = Path.cwd() / ".env"
-    if config_path is not None and (config_path.parent / ".env").exists():
-        default_path = config_path.parent / ".env"
+    default_path = _resolve_default_env_file(config_path=config_path)
     if not default_path.exists():
         _LAST_ENV_FILE = default_path
         _LAST_ENV_LOADED = False
         return False
     loaded = load_dotenv(default_path, override=False) if load_dotenv else _load_simple_dotenv(default_path)
     _LAST_ENV_FILE = default_path
-    _LAST_ENV_LOADED = bool(loaded)
+    _LAST_ENV_LOADED = bool(loaded) or default_path.exists()
     return _LAST_ENV_LOADED
 
 
@@ -389,6 +385,39 @@ def env_status() -> tuple[bool, str]:
     if _LAST_ENV_FILE:
         return _LAST_ENV_LOADED, str(_LAST_ENV_FILE)
     return _LAST_ENV_LOADED, ".env"
+
+
+def _resolve_env_file(path: Path, *, config_path: Path | None = None) -> Path:
+    if path.is_absolute():
+        return path
+    for base in _env_search_bases(config_path):
+        candidate = base / path
+        if candidate.exists():
+            return candidate
+    return _env_search_bases(config_path)[0] / path
+
+
+def _resolve_default_env_file(*, config_path: Path | None = None) -> Path:
+    for base in _env_search_bases(config_path):
+        candidate = base / ".env"
+        if candidate.exists():
+            return candidate
+    return _env_search_bases(config_path)[0] / ".env"
+
+
+def _env_search_bases(config_path: Path | None = None) -> list[Path]:
+    bases: list[Path] = []
+    if config_path is not None:
+        bases.append(config_path.expanduser().resolve().parent)
+    bases.append(Path.cwd().resolve())
+    if config_path is None:
+        bases.append(Path(__file__).resolve().parents[1])
+
+    unique: list[Path] = []
+    for base in bases:
+        if base not in unique:
+            unique.append(base)
+    return unique
 
 
 def _load_simple_dotenv(path: Path) -> bool:

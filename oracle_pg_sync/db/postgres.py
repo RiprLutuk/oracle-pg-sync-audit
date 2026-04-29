@@ -7,6 +7,7 @@ import psycopg
 from psycopg import sql
 
 from oracle_pg_sync.config import PostgresConfig, validate_postgres_config
+from oracle_pg_sync.utils.retry import connect_retry
 
 try:
     from psycopg_pool import ConnectionPool
@@ -16,7 +17,10 @@ except ImportError:
 
 def connect(config: PostgresConfig, *, autocommit: bool = False):
     validate_postgres_config(config)
-    return psycopg.connect(**config.conninfo(), autocommit=autocommit)
+    return connect_retry(
+        lambda: psycopg.connect(**config.conninfo(), autocommit=autocommit),
+        label=f"PostgreSQL connect host={config.host}",
+    )
 
 
 def connection_pool(
@@ -29,11 +33,14 @@ def connection_pool(
     validate_postgres_config(config)
     if ConnectionPool is None:
         raise RuntimeError("psycopg_pool is required for PostgreSQL connection pooling")
-    return ConnectionPool(
-        conninfo=config.conninfo_string(),
-        min_size=max(1, int(min_size or 1)),
-        max_size=max(1, int(max_size or 1)),
-        timeout=max(1, int(timeout or 30)),
+    return connect_retry(
+        lambda: ConnectionPool(
+            conninfo=config.conninfo_string(),
+            min_size=max(1, int(min_size or 1)),
+            max_size=max(1, int(max_size or 1)),
+            timeout=max(1, int(timeout or 30)),
+        ),
+        label=f"PostgreSQL pool connect host={config.host}",
     )
 
 
