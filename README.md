@@ -242,12 +242,18 @@ File yang tidak relevan untuk command tertentu tidak dibuat. Root `reports/` dip
 Untuk investigasi satu run, pakai `reports/run_<timestamp>_<run_id>/logs.txt`.
 Jangan pakai `reports/sync.log` untuk menyimpulkan satu run karena file itu log global lintas run.
 
-Central Excel `report.xlsx` berisi sheet:
+Central Excel `report.xlsx` selalu berisi ringkasan utama, lalu hanya menambahkan
+sheet detail yang punya data agar workbook tidak penuh tab kosong.
+
+Sheet utama:
 
 - `00_Dashboard`
 - `01_Run_Summary`
 - `02_Table_Sync_Status`
 - `03_Rowcount_Compare`
+
+Sheet detail yang muncul jika relevan:
+
 - `04_Checksum_Result`
 - `05_Column_Diff`
 - `06_Index_Compare`
@@ -258,7 +264,9 @@ Central Excel `report.xlsx` berisi sheet:
 - `11_Checkpoint`
 - `12_Performance`
 - `13_Errors`
-- `14_Config`
+- `14_Rollback`
+- `15_Timeline`
+- `16_Config`
 
 `report.html` menampilkan total table, jumlah `MATCH`, `WARNING`, `MISMATCH`,
 `MISSING`, top table rowcount terbesar, column mismatch, rowcount mismatch,

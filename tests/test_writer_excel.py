@@ -48,16 +48,10 @@ class WriterExcelTest(unittest.TestCase):
                 "03_Rowcount_Compare",
                 "04_Checksum_Result",
                 "05_Column_Diff",
-                "06_Index_Compare",
                 "07_Object_Dependency",
-                "08_LOB_Columns",
-                "09_Failed_Tables",
                 "10_Watermark",
                 "11_Checkpoint",
                 "12_Performance",
-                "13_Errors",
-                "14_Rollback",
-                "15_Timeline",
                 "16_Config",
             ],
         )
@@ -67,6 +61,38 @@ class WriterExcelTest(unittest.TestCase):
         self.assertEqual(workbook["00_Dashboard"]["D2"].value, 0)
         self.assertEqual(workbook["00_Dashboard"]["E2"].value, 0)
         self.assertEqual(workbook["00_Dashboard"]["F2"].value, 1)
+
+    def test_empty_optional_sheets_are_skipped_and_rows_are_deduped(self):
+        from oracle_pg_sync.reports.writer_excel import write_central_report_xlsx
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.xlsx"
+            dependency = {
+                "table_name": "public.sample",
+                "object_type": "VIEW",
+                "object_name": "sample_v",
+            }
+            dependency_summary = {"table_name": "public.sample", "broken_count": 0}
+
+            write_central_report_xlsx(
+                path,
+                sync_rows=[{"table_name": "public.sample", "status": "SUCCESS", "rows_loaded": 10}],
+                checksum_rows=[],
+                dependency_rows=[dependency, dict(dependency)],
+                dependency_summary_rows=[dependency_summary, dict(dependency_summary)],
+                lob_rows=[],
+                rollback_rows=[],
+                timeline_rows=[],
+            )
+
+            workbook = load_workbook(path)
+
+        self.assertNotIn("04_Checksum_Result", workbook.sheetnames)
+        self.assertNotIn("08_LOB_Columns", workbook.sheetnames)
+        self.assertNotIn("14_Rollback", workbook.sheetnames)
+        self.assertNotIn("15_Timeline", workbook.sheetnames)
+        self.assertIn("07_Object_Dependency", workbook.sheetnames)
+        self.assertEqual(workbook["07_Object_Dependency"].max_row, 3)
 
     def test_long_cell_values_are_truncated_before_openpyxl_warning(self):
         from oracle_pg_sync.reports.writer_excel import EXCEL_CELL_MAX_CHARS, write_central_report_xlsx

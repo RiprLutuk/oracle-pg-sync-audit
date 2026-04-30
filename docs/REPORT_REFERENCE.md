@@ -31,25 +31,29 @@ The workbook name is `report.xlsx` and the HTML dashboard is `report.html`.
 
 ## Excel Workbook
 
-Sheets are fixed:
+The workbook always includes the dashboard and run summary. Detail sheets are
+written only when they contain data, so a run does not get empty duplicate tabs.
 
 1. `00_Dashboard`
 2. `01_Run_Summary`
-3. `02_Table_Sync_Status`
-4. `03_Rowcount_Compare`
-5. `04_Checksum_Result`
-6. `05_Column_Diff`
-7. `06_Index_Compare`
-8. `07_Object_Dependency`
-9. `08_LOB_Columns`
-10. `09_Failed_Tables`
-11. `10_Watermark`
-12. `11_Checkpoint`
-13. `12_Performance`
-14. `13_Errors`
-15. `14_Rollback`
-16. `15_Timeline`
-17. `16_Config`
+
+These detail sheets appear when relevant rows exist:
+
+- `02_Table_Sync_Status`
+- `03_Rowcount_Compare`
+- `04_Checksum_Result`
+- `05_Column_Diff`
+- `06_Index_Compare`
+- `07_Object_Dependency`
+- `08_LOB_Columns`
+- `09_Failed_Tables`
+- `10_Watermark`
+- `11_Checkpoint`
+- `12_Performance`
+- `13_Errors`
+- `14_Rollback`
+- `15_Timeline`
+- `16_Config`
 
 ### `00_Dashboard`
 

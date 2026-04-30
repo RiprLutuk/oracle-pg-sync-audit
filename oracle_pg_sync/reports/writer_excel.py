@@ -9,6 +9,7 @@ from openpyxl.styles import PatternFill
 
 EXCEL_CELL_MAX_CHARS = 32767
 EXCEL_SAFE_CELL_CHARS = 32000
+ALWAYS_INCLUDE_SHEETS = {"00_Dashboard", "01_Run_Summary"}
 
 
 def write_inventory_xlsx(path: Path, inventory_rows: list[dict]) -> None:
@@ -78,6 +79,9 @@ def write_central_report_xlsx(
     }
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         for name, rows in sheets.items():
+            rows = _dedupe_rows(rows)
+            if not _should_write_sheet(name, rows):
+                continue
             _dataframe(rows).to_excel(writer, index=False, sheet_name=name[:31])
         workbook = writer.book
         for worksheet in workbook.worksheets:
@@ -253,6 +257,31 @@ def _flatten_config(value: dict[str, Any], prefix: str = "") -> list[dict[str, A
 
 def _dataframe(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame([_excel_safe_row(row) for row in rows])
+
+
+def _should_write_sheet(name: str, rows: list[dict]) -> bool:
+    return name in ALWAYS_INCLUDE_SHEETS or bool(rows)
+
+
+def _dedupe_rows(rows: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for row in rows:
+        marker = tuple(sorted((str(key), _marker_value(value)) for key, value in row.items()))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(row)
+    return deduped
+
+
+def _marker_value(value: Any) -> str:
+    if isinstance(value, (dict, list, tuple, set)):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            return str(value)
+    return str(value)
 
 
 def _combine_column_diff_rows(column_diff_rows: list[dict], type_mismatch_rows: list[dict]) -> list[dict]:
