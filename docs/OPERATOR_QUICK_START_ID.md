@@ -154,7 +154,14 @@ postgres_row_count
 row_count_match
 row_count_diff
 validation_status
+data_integrity_status
 ```
+
+`data_integrity_status`:
+
+- `PASS`: copy selesai, rowcount valid, checksum tidak mismatch, dan tidak ada failed rows.
+- `FAIL`: rowcount mismatch, checksum mismatch, row copy tidak lengkap, atau `rows_failed > 0`.
+- `UNKNOWN`: copy selesai tapi validasi wajib belum lengkap, sehingga status table tidak boleh dianggap bersih.
 
 ## 7. Jika Ada Masalah
 

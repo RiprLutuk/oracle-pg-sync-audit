@@ -23,7 +23,7 @@ if "oracledb" not in sys.modules:
     sys.modules["oracledb"] = oracledb_stub
 
 from oracle_pg_sync.config import AppConfig, OracleConfig, PostgresConfig, SyncConfig
-from oracle_pg_sync.sync.oracle_to_postgres import OracleToPostgresSync
+from oracle_pg_sync.sync.oracle_to_postgres import OracleToPostgresSync, SyncResult
 from oracle_pg_sync.sync.runtime import SyncExecutionContext
 
 
@@ -111,6 +111,30 @@ class OracleToPostgresSyncTest(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             sync._validate_copy_completeness(result)
+
+    def test_data_integrity_requires_copy_and_rowcount_match(self):
+        sync = OracleToPostgresSync(AppConfig(oracle=OracleConfig(schema="APP"), postgres=PostgresConfig(schema="public")))
+        result = SyncResult("public.sample", "truncate", "PENDING")
+        result.rows_read_from_oracle = 3
+        result.rows_written_to_postgres = 3
+        result.rows_failed = 0
+        result.oracle_row_count = 3
+        result.postgres_row_count = 3
+        result.row_count_match = True
+
+        self.assertEqual(sync._data_integrity_status(result), "PASS")
+
+        result.postgres_row_count = 2
+        result.row_count_match = False
+        self.assertEqual(sync._data_integrity_status(result), "FAIL")
+
+    def test_data_integrity_unknown_when_rowcount_skipped(self):
+        sync = OracleToPostgresSync(AppConfig(oracle=OracleConfig(schema="APP"), postgres=PostgresConfig(schema="public")))
+        result = SyncResult("public.sample", "truncate", "PENDING")
+        result.rows_read_from_oracle = 3
+        result.rows_written_to_postgres = 3
+
+        self.assertEqual(sync._data_integrity_status(result), "UNKNOWN")
 
     def test_sync_tables_parallel_executes_all_tables(self):
         class FakeExecutionContext:

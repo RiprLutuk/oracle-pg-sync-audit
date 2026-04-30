@@ -142,6 +142,7 @@ def _rowcount_rows(sync_rows: list[dict], inventory_rows: list[dict]) -> list[di
             "oracle_count_sql_summary": row.get("oracle_count_sql_summary"),
             "postgres_count_sql_summary": row.get("postgres_count_sql_summary"),
             "validation_status": row.get("validation_status"),
+            "data_integrity_status": row.get("data_integrity_status"),
             "status": row.get("status"),
         }
         for row in rows

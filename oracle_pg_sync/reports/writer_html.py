@@ -47,6 +47,7 @@ SYNC_PROBLEM_FIELDS = [
     "rows_failed",
     "row_count_diff",
     "validation_status",
+    "data_integrity_status",
     "message",
 ]
 CHECKSUM_FIELDS = [

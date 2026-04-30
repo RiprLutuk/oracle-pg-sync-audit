@@ -59,6 +59,7 @@ class SyncResult:
     rows_failed: int = 0
     row_count_diff: int | None = None
     validation_status: str = ""
+    data_integrity_status: str = "UNKNOWN"
     failed_row_samples: list[dict[str, Any]] = field(default_factory=list)
     missing_key_report_files: str = ""
     lob_copy_status: str = ""
@@ -123,6 +124,7 @@ class SyncResult:
             "row_count_match": self.row_count_match,
             "row_count_diff": self.row_count_diff,
             "validation_status": self.validation_status,
+            "data_integrity_status": self.data_integrity_status,
             "failed_row_samples": json.dumps(self.failed_row_samples, ensure_ascii=True) if self.failed_row_samples else "",
             "missing_key_report_files": self.missing_key_report_files,
             "lob_copy_status": self.lob_copy_status,
@@ -716,7 +718,13 @@ class OracleToPostgresSync:
                             result.message = message
                     else:
                         result.validation_status = "validation_skipped"
-                    if result.status != "WARNING":
+                    result.data_integrity_status = self._data_integrity_status(result)
+                    if result.data_integrity_status == "FAIL":
+                        raise RuntimeError(self._data_integrity_failure_message(result))
+                    if result.data_integrity_status == "UNKNOWN":
+                        result.status = "WARNING"
+                        result.message = result.message or "data integrity validation incomplete"
+                    elif result.status != "WARNING":
                         result.status = "SUCCESS"
                     if self.config.sync.analyze_after_load and mode in {"truncate", "truncate_safe", "swap_safe", "incremental_safe"}:
                         postgres.analyze_table(pcur, table.schema, table.table)
@@ -747,6 +755,7 @@ class OracleToPostgresSync:
                 pass
             result.status = "FAILED"
             result.message = str(exc)
+            result.data_integrity_status = "FAIL"
             result.failed_tables = [table.fqname]
             if checkpoint_store:
                 checkpoint_store.record_event(
@@ -1706,6 +1715,50 @@ class OracleToPostgresSync:
                 f"rows_read_from_oracle={result.rows_read_from_oracle} "
                 f"rows_written_to_postgres={result.rows_written_to_postgres} diff={diff}"
             )
+
+    def _data_integrity_status(self, result: SyncResult) -> str:
+        if result.rows_failed:
+            return "FAIL"
+        if result.rows_read_from_oracle != result.rows_written_to_postgres:
+            return "FAIL"
+        if result.checksum_status == "MISMATCH":
+            return "FAIL"
+        if result.row_count_match is False:
+            return "FAIL"
+        if result.row_count_match is not True:
+            return "UNKNOWN"
+        if result.mode in {"truncate", "truncate_safe", "swap", "swap_safe"}:
+            if result.postgres_row_count is None:
+                return "UNKNOWN"
+            if result.rows_written_to_postgres != result.postgres_row_count:
+                return "FAIL"
+        return "PASS"
+
+    def _data_integrity_failure_message(self, result: SyncResult) -> str:
+        if result.rows_failed:
+            return f"data integrity failed: rows_failed={result.rows_failed}"
+        if result.rows_read_from_oracle != result.rows_written_to_postgres:
+            return (
+                "data integrity failed: "
+                f"rows_read_from_oracle={result.rows_read_from_oracle} "
+                f"rows_written_to_postgres={result.rows_written_to_postgres}"
+            )
+        if result.checksum_status == "MISMATCH":
+            return "data integrity failed: checksum mismatch"
+        if result.row_count_match is False:
+            return (
+                "data integrity failed: "
+                f"oracle_row_count={result.oracle_row_count} "
+                f"postgres_row_count={result.postgres_row_count} "
+                f"row_count_diff={result.row_count_diff}"
+            )
+        if result.postgres_row_count is not None and result.rows_written_to_postgres != result.postgres_row_count:
+            return (
+                "data integrity failed: "
+                f"rows_written_to_postgres={result.rows_written_to_postgres} "
+                f"postgres_row_count={result.postgres_row_count}"
+            )
+        return "data integrity failed"
 
     def _rowcount_validation_enabled(self, table_cfg: TableConfig) -> bool:
         return bool(table_cfg.validation.rowcount.enabled and self.config.validation.rowcount.enabled)

@@ -24,9 +24,15 @@ class ReverseSyncResult:
     mode: str
     status: str
     rows_loaded: int = 0
+    rows_read_from_postgres: int = 0
+    rows_written_to_oracle: int = 0
+    rows_failed: int = 0
     oracle_row_count: int | None = None
     postgres_row_count: int | None = None
     row_count_match: bool | None = None
+    row_count_diff: int | None = None
+    validation_status: str = ""
+    data_integrity_status: str = "UNKNOWN"
     dry_run: bool = True
     message: str = ""
     elapsed_seconds: float = 0.0
@@ -55,9 +61,15 @@ class ReverseSyncResult:
             "mode": self.mode,
             "status": self.status,
             "rows_loaded": self.rows_loaded,
+            "rows_read_from_postgres": self.rows_read_from_postgres,
+            "rows_written_to_oracle": self.rows_written_to_oracle,
+            "rows_failed": self.rows_failed,
             "oracle_row_count": self.oracle_row_count,
             "postgres_row_count": self.postgres_row_count,
             "row_count_match": self.row_count_match,
+            "row_count_diff": self.row_count_diff,
+            "validation_status": self.validation_status,
+            "data_integrity_status": self.data_integrity_status,
             "dry_run": self.dry_run,
             "message": self.message,
             "elapsed_seconds": round(self.elapsed_seconds, 3),
@@ -347,6 +359,8 @@ class PostgresToOracleSync:
                         raise ValueError(f"Unsupported reverse sync mode: {mode}")
 
                     result.rows_loaded = rows
+                    result.rows_read_from_postgres = rows
+                    result.rows_written_to_oracle = rows
                     checksum_rows = self._validate_checksum(
                         pcur,
                         ocur,
@@ -366,7 +380,28 @@ class PostgresToOracleSync:
                             result.status = "FAILED"
                             result.message = "checksum mismatch after reverse load"
                             ocon.rollback()
+                            result.data_integrity_status = "FAIL"
                             return result
+                    if self._rowcount_validation_enabled(table_cfg):
+                        result.oracle_row_count = oracle.count_rows(ocur, owner, table.table)
+                        result.postgres_row_count = postgres.count_rows(pcur, table.schema, table.table)
+                        result.row_count_match = result.oracle_row_count == result.postgres_row_count
+                        result.row_count_diff = (result.oracle_row_count or 0) - (result.postgres_row_count or 0)
+                        result.validation_status = "validation_pass" if result.row_count_match else "validation_failed"
+                    else:
+                        result.validation_status = "validation_skipped"
+                    result.data_integrity_status = self._data_integrity_status(result)
+                    if result.data_integrity_status == "FAIL":
+                        result.status = "FAILED"
+                        result.message = self._data_integrity_failure_message(result)
+                        ocon.rollback()
+                        return result
+                    if result.data_integrity_status == "UNKNOWN":
+                        result.status = "WARNING"
+                        result.message = result.message or "data integrity validation incomplete"
+                    else:
+                        result.status = "SUCCESS"
+
                     if checkpoint_store:
                         checkpoint_store.finish_chunk(
                             run_id,
@@ -376,17 +411,6 @@ class PostgresToOracleSync:
                             rows_attempted=rows,
                             rows_success=rows,
                         )
-                    if self.config.sync.exact_count_after_load:
-                        result.oracle_row_count = oracle.count_rows(ocur, owner, table.table)
-                        result.postgres_row_count = postgres.count_rows(pcur, table.schema, table.table)
-                        result.row_count_match = result.oracle_row_count == result.postgres_row_count
-                        if result.row_count_match:
-                            result.status = "SUCCESS"
-                        else:
-                            result.status = "WARNING"
-                            result.message = "rowcount berbeda setelah reverse sync"
-                    else:
-                        result.status = "SUCCESS"
 
                     ocon.commit()
                     self._update_watermark(
@@ -405,6 +429,7 @@ class PostgresToOracleSync:
                 checkpoint_store.finish_chunk(run_id, table.fqname, "full", status="failed", error_message=str(exc))
             result.status = "FAILED"
             result.message = str(exc)
+            result.data_integrity_status = "FAIL"
             self.logger.exception("Reverse sync failed for %s", table.fqname)
             return result
         finally:
@@ -572,6 +597,53 @@ class PostgresToOracleSync:
                 column_name=cfg.column,
                 value=value,
             )
+
+    def _rowcount_validation_enabled(self, table_cfg: TableConfig) -> bool:
+        return bool(table_cfg.validation.rowcount.enabled and self.config.validation.rowcount.enabled)
+
+    def _data_integrity_status(self, result: ReverseSyncResult) -> str:
+        if result.rows_failed:
+            return "FAIL"
+        if result.rows_read_from_postgres != result.rows_written_to_oracle:
+            return "FAIL"
+        if result.checksum_status == "MISMATCH":
+            return "FAIL"
+        if result.row_count_match is False:
+            return "FAIL"
+        if result.row_count_match is not True:
+            return "UNKNOWN"
+        if result.mode in {"truncate", "delete"}:
+            if result.oracle_row_count is None:
+                return "UNKNOWN"
+            if result.rows_written_to_oracle != result.oracle_row_count:
+                return "FAIL"
+        return "PASS"
+
+    def _data_integrity_failure_message(self, result: ReverseSyncResult) -> str:
+        if result.rows_failed:
+            return f"data integrity failed: rows_failed={result.rows_failed}"
+        if result.rows_read_from_postgres != result.rows_written_to_oracle:
+            return (
+                "data integrity failed: "
+                f"rows_read_from_postgres={result.rows_read_from_postgres} "
+                f"rows_written_to_oracle={result.rows_written_to_oracle}"
+            )
+        if result.checksum_status == "MISMATCH":
+            return "data integrity failed: checksum mismatch"
+        if result.row_count_match is False:
+            return (
+                "data integrity failed: "
+                f"postgres_row_count={result.postgres_row_count} "
+                f"oracle_row_count={result.oracle_row_count} "
+                f"row_count_diff={result.row_count_diff}"
+            )
+        if result.oracle_row_count is not None and result.rows_written_to_oracle != result.oracle_row_count:
+            return (
+                "data integrity failed: "
+                f"rows_written_to_oracle={result.rows_written_to_oracle} "
+                f"oracle_row_count={result.oracle_row_count}"
+            )
+        return "data integrity failed"
 
     def _validate_checksum(
         self,

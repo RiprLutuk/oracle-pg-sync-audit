@@ -7,7 +7,7 @@ from oracle_pg_sync.checkpoint import CheckpointStore, Chunk
 from oracle_pg_sync.config import AppConfig, IncrementalConfig, OracleConfig, PostgresConfig, TableConfig
 from oracle_pg_sync.db import oracle
 from oracle_pg_sync.metadata.type_mapping import ColumnMeta
-from oracle_pg_sync.sync.postgres_to_oracle import PostgresToOracleSync, _apply_checksum_summary
+from oracle_pg_sync.sync.postgres_to_oracle import PostgresToOracleSync, ReverseSyncResult, _apply_checksum_summary
 
 
 class PostgresToOracleSyncTest(unittest.TestCase):
@@ -66,6 +66,29 @@ class PostgresToOracleSyncTest(unittest.TestCase):
         self.assertEqual(result.checksum_status, "MISMATCH")
         self.assertEqual(result.checksum_source_rows, 2)
         self.assertEqual(result.checksum_target_hash, "b")
+
+    def test_reverse_data_integrity_requires_copy_and_rowcount_match(self):
+        sync = PostgresToOracleSync(AppConfig(oracle=OracleConfig(schema="APP"), postgres=PostgresConfig(schema="public")))
+        result = ReverseSyncResult("public.sample", "truncate", "PENDING")
+        result.rows_read_from_postgres = 3
+        result.rows_written_to_oracle = 3
+        result.oracle_row_count = 3
+        result.postgres_row_count = 3
+        result.row_count_match = True
+
+        self.assertEqual(sync._data_integrity_status(result), "PASS")
+
+        result.oracle_row_count = 2
+        result.row_count_match = False
+        self.assertEqual(sync._data_integrity_status(result), "FAIL")
+
+    def test_reverse_data_integrity_unknown_when_rowcount_skipped(self):
+        sync = PostgresToOracleSync(AppConfig(oracle=OracleConfig(schema="APP"), postgres=PostgresConfig(schema="public")))
+        result = ReverseSyncResult("public.sample", "truncate", "PENDING")
+        result.rows_read_from_postgres = 3
+        result.rows_written_to_oracle = 3
+
+        self.assertEqual(sync._data_integrity_status(result), "UNKNOWN")
 
     def test_oracle_merge_rows_uses_merge_and_bind_rows(self):
         class Cursor:
