@@ -12,6 +12,7 @@ modular.
 ## Guide Lengkap
 
 - [Panduan Operator Awam](docs/OPERATOR_QUICK_START_ID.md): urutan command harian paling aman, cara baca hasil, dan apa yang harus dicek sebelum `--go`.
+- [DBA Daily Operations Guide](docs/DBA_DAILY_OPERATIONS.md): command harian DBA untuk validate, circuit breaker, rollback, post-sync verification, dan decision matrix mode sync.
 - [Quick Start](docs/USER_GUIDE.md): setup awal, install, isi `.env`, isi `config.yaml`, dan command harian.
 - [Configuration Reference](docs/CONFIG_REFERENCE.md): penjelasan semua field `.env` dan `config.yaml`.
 - [Production Runbook](docs/PRODUCTION_RUNBOOK.md): alur audit, dry-run, eksekusi, validasi, rollback, dan checklist produksi.
@@ -192,6 +193,7 @@ ops sync
 ops sync --go
 ops resume
 ops status
+ops circuit status
 ops report latest
 ```
 
@@ -283,6 +285,9 @@ dependency terbesar, checksum mismatch, LOB summary, dan table yang gagal sync.
 
 Oracle ke PostgreSQL memakai PostgreSQL `COPY FROM STDIN`. PostgreSQL ke Oracle memakai batch `executemany` dan Oracle `MERGE` untuk upsert.
 Untuk reverse upsert, `key_columns` bisa berasal dari config atau command `--key-columns`.
+Untuk profile job, `daily` memakai `truncate` pada arah PostgreSQL ke Oracle,
+sedangkan `every_5min` memakai `upsert`; tetap disarankan menulis `--mode`
+eksplisit di cron.
 
 ## Safety Production
 
@@ -295,7 +300,7 @@ Untuk reverse upsert, `key_columns` bisa berasal dari config atau command `--key
   Oracle `BLOB`, `CLOB`, `NCLOB`, `LONG`, dan `LONG RAW` terdeteksi end-to-end.
 - DBA shortcut CLI tersedia sebagai `ops`, misalnya `ops sync --go --lob stream`,
   `ops doctor`, `ops dependencies check`, `ops dependencies repair`,
-  `ops analyze lob`, dan `ops resume RUN_ID`.
+  `ops analyze lob`, `ops circuit status`, dan `ops resume RUN_ID`.
 - Sync membuat dependency report sebelum dan sesudah load: `dependency_pre.csv` dan `dependency_post.csv`.
 - Dependency health diringkas di `dependency_summary.csv`, manifest, Excel, dan HTML.
 - Saat execute, toolkit mencoba Oracle invalid object compile dan PostgreSQL MV refresh/validation.

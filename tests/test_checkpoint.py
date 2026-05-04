@@ -111,6 +111,18 @@ class CheckpointTest(unittest.TestCase):
 
             self.assertIsNotNone(blocked)
 
+    def test_circuit_breaker_list_and_clear(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = CheckpointStore(Path(tmp) / "checkpoint.sqlite3")
+            store.register_job_failure("job:sync", cooldown_minutes=30, error_message="boom")
+
+            self.assertEqual(store.list_circuit_breakers()[0]["job_key"], "job:sync")
+            store.clear_job_failures("job:sync")
+            self.assertEqual(store.list_circuit_breakers(), [])
+            store.register_job_failure("job:sync", cooldown_minutes=30, error_message="boom")
+            self.assertEqual(store.clear_all_job_failures(), 1)
+            self.assertEqual(store.list_circuit_breakers(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

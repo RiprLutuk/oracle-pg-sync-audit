@@ -3,7 +3,7 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from oracle_pg_sync.cli import (
     _audit_workers,
@@ -20,6 +20,8 @@ from oracle_pg_sync.cli import (
     build_parser,
     main as cli_main,
     run_audit,
+    validate_missing_keys,
+    validate_rowcounts,
 )
 from oracle_pg_sync.config import (
     AppConfig,
@@ -380,6 +382,66 @@ tables:
         self.assertEqual(result.oracle_not_postgres_sample, [("1",), ("2",)])
         self.assertTrue(result.sample_truncated)
 
+    def test_validate_rowcounts_supports_postgres_to_oracle(self):
+        config = AppConfig(
+            oracle=OracleConfig(schema="APP"),
+            postgres=PostgresConfig(schema="public"),
+            tables=[TableConfig(name="public.sample", where="updated_at >= CURRENT_DATE")],
+        )
+
+        with (
+            patch("oracle_pg_sync.db.oracle.connect", return_value=_DummyConnection()),
+            patch("oracle_pg_sync.db.postgres.connect", return_value=_DummyConnection()),
+            patch("oracle_pg_sync.db.oracle.count_rows_where", return_value=7) as oracle_count,
+            patch("oracle_pg_sync.db.postgres.count_rows_where", return_value=5) as postgres_count,
+        ):
+            rows = validate_rowcounts(
+                config,
+                ["public.sample"],
+                __import__("logging").getLogger("test_validate_reverse"),
+                direction="postgres-to-oracle",
+            )
+
+        self.assertEqual(rows[0]["source_schema"], "public")
+        self.assertEqual(rows[0]["target_schema"], "APP")
+        self.assertEqual(rows[0]["oracle_row_count"], 7)
+        self.assertEqual(rows[0]["postgres_row_count"], 5)
+        self.assertEqual(rows[0]["row_count_diff"], 2)
+        self.assertEqual(rows[0]["status"], "MISMATCH")
+        postgres_count.assert_called_once_with(ANY, "public", "sample", "updated_at >= CURRENT_DATE")
+        oracle_count.assert_called_once_with(ANY, "APP", "sample")
+
+    def test_validate_missing_keys_supports_postgres_to_oracle(self):
+        config = AppConfig(
+            oracle=OracleConfig(schema="APP"),
+            postgres=PostgresConfig(schema="public"),
+            tables=[TableConfig(name="public.sample", key_columns=["id"])],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch("oracle_pg_sync.db.oracle.connect", return_value=_DummyConnection()),
+                patch("oracle_pg_sync.db.postgres.connect", return_value=_DummyConnection()),
+                patch("oracle_pg_sync.db.oracle.select_rows", return_value=_Cursor([(1,), (3,)])),
+                patch("oracle_pg_sync.db.postgres.select_rows", return_value=_Cursor([(1,), (2,)])),
+            ):
+                rows = validate_missing_keys(
+                    config,
+                    ["public.sample"],
+                    __import__("logging").getLogger("test_validate_reverse_keys"),
+                    direction="postgres-to-oracle",
+                    report_dir=Path(tmp),
+                )
+
+            oracle_not_pg = (Path(tmp) / "keys_in_oracle_not_in_postgres.csv").read_text(encoding="utf-8")
+            pg_not_oracle = (Path(tmp) / "keys_in_postgres_not_in_oracle.csv").read_text(encoding="utf-8")
+
+        self.assertEqual(rows[0]["status"], "MISMATCH")
+        self.assertEqual(rows[0]["oracle_not_postgres_count"], 1)
+        self.assertEqual(rows[0]["postgres_not_oracle_count"], 1)
+        self.assertIn("APP.sample", oracle_not_pg)
+        self.assertIn("public.sample", pg_not_oracle)
+
     def test_sync_accepts_safe_modes_and_simulate(self):
         args = build_parser().parse_args(["sync", "--mode", "truncate_safe", "--simulate"])
 
@@ -399,6 +461,22 @@ tables:
 
         self.assertTrue(args.incremental)
         self.assertEqual(args.mode, "incremental_safe")
+
+    def test_profile_every_5min_sets_reverse_upsert_when_direction_is_postgres_to_oracle(self):
+        args = build_parser().parse_args(["sync", "--profile", "every_5min", "--direction", "postgres-to-oracle"])
+
+        _apply_profile(args)
+
+        self.assertTrue(args.incremental)
+        self.assertEqual(args.mode, "upsert")
+
+    def test_profile_daily_sets_reverse_truncate_when_direction_is_postgres_to_oracle(self):
+        args = build_parser().parse_args(["sync", "--profile", "daily", "--direction", "postgres-to-oracle"])
+
+        _apply_profile(args)
+
+        self.assertTrue(args.full_refresh)
+        self.assertEqual(args.mode, "truncate")
 
     def test_where_override_updates_table_config(self):
         config = AppConfig(
@@ -556,6 +634,27 @@ reports:
         self.assertIn("public.sample", html)
         self.assertIn('href="manifest.json"', html)
         self.assertIn('href="report.xlsx"', html)
+
+
+class _DummyConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def cursor(self):
+        return self
+
+
+class _Cursor:
+    def __init__(self, rows):
+        self.rows = list(rows)
+
+    def fetchmany(self, size):
+        batch = self.rows[:size]
+        self.rows = self.rows[size:]
+        return batch
 
 
 if __name__ == "__main__":

@@ -312,6 +312,11 @@ class CheckpointStore:
             row = con.execute("SELECT * FROM circuit_breakers WHERE job_key = ?", (job_key,)).fetchone()
         return dict(row) if row else None
 
+    def list_circuit_breakers(self) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            con.row_factory = sqlite3.Row
+            return [dict(row) for row in con.execute("SELECT * FROM circuit_breakers ORDER BY job_key")]
+
     def register_job_failure(self, job_key: str, *, cooldown_minutes: int, error_message: str) -> dict[str, Any]:
         now = utc_now()
         cooldown_until = ""
@@ -337,6 +342,9 @@ class CheckpointStore:
 
     def clear_job_failures(self, job_key: str) -> None:
         self._write(lambda con: con.execute("DELETE FROM circuit_breakers WHERE job_key = ?", (job_key,)))
+
+    def clear_all_job_failures(self) -> int:
+        return int(self._write(lambda con: con.execute("DELETE FROM circuit_breakers").rowcount or 0) or 0)
 
     def job_blocked(self, job_key: str, *, max_failures: int) -> dict[str, Any] | None:
         status = self.circuit_status(job_key)

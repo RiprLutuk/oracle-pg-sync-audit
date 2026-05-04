@@ -193,6 +193,16 @@ ops dependencies check --config config.yaml
 ops dependencies repair --config config.yaml
 ```
 
+Job gagal berulang atau cron berhenti karena circuit breaker:
+
+```bash
+ops circuit status --config config.yaml
+ops circuit reset "JOB_KEY_DARI_STATUS" --config config.yaml
+```
+
+Reset circuit hanya setelah root cause sudah jelas, data sudah divalidasi atau
+di-rollback, dan dry-run berikutnya bersih.
+
 Rollback, jika run memakai safe mode dan backup tersedia:
 
 ```bash
@@ -216,3 +226,32 @@ ops rollback <run_id> --config config.yaml
 - Isi `RETRY`, `TIMEOUT_SECONDS`, `LOG_ROTATE_BYTES`, dan `LOG_RETENTION_DAYS` dengan angka.
 - Untuk job incremental reverse, selalu isi `--mode upsert`, `--key-columns`, dan `--incremental-column`.
 - Ingat: job wrapper menambahkan `--go`, jadi cron berarti execute sungguhan.
+
+## Catatan PostgreSQL ke Oracle
+
+Untuk arah reverse, mode harian yang paling umum adalah `upsert`:
+
+```bash
+ops sync \
+  --config config.yaml \
+  --direction postgres-to-oracle \
+  --tables public.nama_table \
+  --mode upsert \
+  --key-columns id \
+  --incremental-column last_update \
+  --incremental
+```
+
+Validasi setelah execute:
+
+```bash
+ops validate --config config.yaml --direction postgres-to-oracle --tables public.nama_table
+ops validate missing-keys --config config.yaml --direction postgres-to-oracle --tables public.nama_table
+```
+
+Jangan pakai `upsert` kalau key belum jelas. Untuk reverse full replace,
+gunakan `--mode truncate` hanya saat window aman dan app owner setuju Oracle
+target boleh diganti penuh.
+
+Panduan operasional DBA yang lebih detail ada di
+[DBA Daily Operations Guide](DBA_DAILY_OPERATIONS.md).

@@ -113,6 +113,43 @@ tables:
         self.assertIn("oracle_connection,WARNING,skipped by --offline", output.getvalue())
         self.assertIn("dependency_health,WARNING,skipped by --offline", output.getvalue())
 
+    def test_ops_circuit_status_and_reset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reports_dir = Path(tmp) / "reports"
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text(
+                f"""
+oracle:
+  schema: APP
+postgres:
+  schema: public
+reports:
+  output_dir: {reports_dir}
+sync:
+  checkpoint_dir: {reports_dir}/checkpoints/checkpoint.sqlite3
+  max_failures: 3
+tables:
+  - public.sample
+""",
+                encoding="utf-8",
+            )
+            from oracle_pg_sync.checkpoint import CheckpointStore
+
+            store = CheckpointStore(reports_dir / "checkpoints" / "checkpoint.sqlite3")
+            store.register_job_failure("job:sync", cooldown_minutes=30, error_message="boom")
+
+            with redirect_stdout(StringIO()) as output:
+                status = ops_main(["circuit", "status", "--config", str(config_path)])
+
+            self.assertEqual(status, 0)
+            self.assertIn("job:sync", output.getvalue())
+
+            with redirect_stdout(StringIO()) as output:
+                reset_status = ops_main(["circuit", "reset", "job:sync", "--config", str(config_path)])
+
+            self.assertEqual(reset_status, 0)
+            self.assertIn("reset_job_key,job:sync", output.getvalue())
+
     def test_ops_dependencies_check_delegates_to_old_cli(self):
         with patch("oracle_pg_sync.ops.cli_main", return_value=0) as cli:
             status = ops_main(["dependencies", "check", "--config", "config.yaml", "--tables", "public.sample"])

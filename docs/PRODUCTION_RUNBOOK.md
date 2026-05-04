@@ -87,25 +87,51 @@ Confirm these fields for every table:
 
 ## 4. First PostgreSQL -> Oracle Execute
 
-Prefer `upsert` with keys for reverse sync.
+Prefer `upsert` with keys for reverse sync. Reverse safe-mode rollback is not
+as complete as Oracle -> PostgreSQL safe modes, so use Oracle-native backup or
+a DBA-approved restore path for destructive reverse full refreshes.
 
 1. Dry-run:
 
 ```bash
-ops sync --config config.yaml --direction postgres-to-oracle --mode upsert
+ops sync \
+  --config config.yaml \
+  --direction postgres-to-oracle \
+  --tables public.address \
+  --mode upsert \
+  --key-columns address_id \
+  --incremental-column last_update \
+  --incremental
 ```
 
 2. Execute:
 
 ```bash
-ops sync --config config.yaml --direction postgres-to-oracle --mode upsert --go
+ops sync \
+  --config config.yaml \
+  --direction postgres-to-oracle \
+  --tables public.address \
+  --mode upsert \
+  --key-columns address_id \
+  --incremental-column last_update \
+  --incremental \
+  --go
 ```
 
 3. Confirm:
 
 - `status` is `SUCCESS` or an expected `WARNING`
 - no checksum mismatch
+- `data_integrity_status` is `PASS` when validation scope is complete
 - no critical dependency failures after the run
+- `ops validate --direction postgres-to-oracle --tables public.address` is clean
+- `ops validate missing-keys --direction postgres-to-oracle --tables public.address` is clean when keys are configured
+
+For reverse full replace, use only during a maintenance window:
+
+```bash
+ops sync --config config.yaml --direction postgres-to-oracle --tables public.table_name --mode truncate --go
+```
 
 ## 5. Daily Operations
 
@@ -114,10 +140,13 @@ Recommended operator commands:
 ```bash
 ops status --config config.yaml
 ops report latest --config config.yaml
+ops circuit status --config config.yaml
 ops dependencies check --config config.yaml
 ```
 
 Use the run folder as the unit of investigation. Do not mix files from different run directories.
+For detailed daily DBA command flow, validation SOP, rollback SOP, and sync mode
+decision matrix, use [DBA Daily Operations Guide](DBA_DAILY_OPERATIONS.md).
 
 ## 6. Cron Deployment
 
@@ -237,6 +266,24 @@ Production execute jobs should treat repeated failure as a stop condition:
 - after `sync.max_failures` consecutive failures for the same job key, the job is blocked for `sync.cooldown_minutes`
 - a blocked job exits non-zero without touching data
 - `job.alert` can send webhook or email payloads for `failure`, `repeated_failure`, and `dependency_error`
+
+Check circuit state:
+
+```bash
+ops circuit status --config config.yaml
+```
+
+Reset a circuit only after the failed data path is verified or rolled back:
+
+```bash
+ops circuit reset "JOB_KEY_FROM_STATUS" --config config.yaml
+```
+
+Reset every circuit entry only during controlled recovery:
+
+```bash
+ops circuit reset --all --config config.yaml
+```
 
 ## 10. Post-Change Checklist
 

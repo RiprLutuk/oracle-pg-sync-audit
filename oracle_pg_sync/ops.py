@@ -59,12 +59,14 @@ def main(argv: list[str] | None = None) -> int:
     if command == "status":
         _print_status(rest)
         return 0
+    if command == "circuit":
+        return _circuit(rest)
     print(f"Unsupported ops command: {command}")
     return 2
 
 
 def _print_usage() -> None:
-    print("Usage: ops audit|sync|rollback|resume|status|watermarks|reset-watermark|validate|report|doctor ...")
+    print("Usage: ops audit|sync|rollback|resume|status|circuit|watermarks|reset-watermark|validate|report|doctor ...")
     print("")
     print("Common:")
     print("  ops --env-file .env.prod doctor --config config.yaml")
@@ -75,6 +77,8 @@ def _print_usage() -> None:
     print("  ops rollback RUN_ID --config config.yaml")
     print("  ops resume [RUN_ID] --config config.yaml")
     print("  ops status --config config.yaml")
+    print("  ops circuit status --config config.yaml")
+    print("  ops circuit reset JOB_KEY --config config.yaml")
     print("  ops report latest --config config.yaml")
     print("  ops doctor --config config.yaml")
     print("  ops dependencies check --config config.yaml")
@@ -146,6 +150,50 @@ def _rollback(args: list[str]) -> int:
     for row in rows:
         print(",".join(str(row.get(field, "")) for field in fields))
     return 1 if any(row.get("status") == "FAILED" for row in rows) else 0
+
+
+def _circuit(args: list[str]) -> int:
+    if not args or args[0] in {"-h", "--help"}:
+        print("Usage: ops circuit status|reset [JOB_KEY|--all] [--config config.yaml]")
+        return 0 if args and args[0] in {"-h", "--help"} else 2
+    action = args[0]
+    rest = args[1:]
+    config = _load_config(rest)
+    store = CheckpointStore(config.sync.checkpoint_dir)
+    if action == "status":
+        rows = store.list_circuit_breakers()
+        print("job_key,failure_count,last_failure_at,cooldown_until,blocked,last_error")
+        for row in rows:
+            blocked = "yes" if store.job_blocked(str(row.get("job_key") or ""), max_failures=config.sync.max_failures) else "no"
+            print(
+                ",".join(
+                    [
+                        str(row.get("job_key") or ""),
+                        str(row.get("failure_count") or 0),
+                        str(row.get("last_failure_at") or ""),
+                        str(row.get("cooldown_until") or ""),
+                        blocked,
+                        str(row.get("last_error") or "").replace("\n", " "),
+                    ]
+                )
+            )
+        return 1 if any(store.job_blocked(str(row.get("job_key") or ""), max_failures=config.sync.max_failures) for row in rows) else 0
+    if action == "reset":
+        if not rest:
+            print("Usage: ops circuit reset JOB_KEY|--all [--config config.yaml]")
+            return 2
+        if rest[0] == "--all":
+            count = store.clear_all_job_failures()
+            print(f"reset_count,{count}")
+            return 0
+        if rest[0].startswith("-"):
+            print("Usage: ops circuit reset JOB_KEY|--all [--config config.yaml]")
+            return 2
+        store.clear_job_failures(rest[0])
+        print(f"reset_job_key,{rest[0]}")
+        return 0
+    print(f"Unsupported circuit action: {action}")
+    return 2
 
 
 def _dependencies(args: list[str]) -> int:

@@ -856,38 +856,68 @@ def run_audit(config: AppConfig, tables: list[str], logger: logging.Logger, *, w
 def validate_rowcounts(config: AppConfig, tables: list[str], logger: logging.Logger, *, direction: str) -> list[dict]:
     from oracle_pg_sync.db import oracle, postgres
 
-    if direction != "oracle-to-postgres":
-        raise SystemExit("rowcount validation currently supports oracle-to-postgres")
+    if direction not in {"oracle-to-postgres", "postgres-to-oracle"}:
+        raise SystemExit(f"rowcount validation does not support direction={direction}")
     rows: list[dict] = []
     with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
         with ocon.cursor() as ocur, pcon.cursor() as pcur:
             for table_name in tables:
                 table_cfg = config.table_config(table_name) or TableConfig(name=table_name)
                 target = split_schema_table(table_cfg.name, config.postgres.schema)
-                target_schema = table_cfg.target_schema or target.schema
-                target_table = table_cfg.target_table or target.table
-                source_schema = table_cfg.source_schema or config.oracle.schema
-                source_table = table_cfg.source_table or target_table
-                source_count = oracle.count_rows_where(ocur, source_schema, source_table, table_cfg.where)
-                target_count = postgres.count_rows_where(pcur, target_schema, target_table)
-                diff = target_count - source_count
-                logger.info("Rowcount %s -> %s.%s to %s.%s diff=%s", table_name, source_schema, source_table, target_schema, target_table, diff)
+                pg_schema = table_cfg.target_schema or target.schema
+                pg_table = table_cfg.target_table or target.table
+                oracle_schema = table_cfg.source_schema or config.oracle.schema
+                oracle_table = table_cfg.source_table or target.table
+                if direction == "oracle-to-postgres":
+                    source_schema = oracle_schema
+                    source_table = oracle_table
+                    target_schema = pg_schema
+                    target_table = pg_table
+                    oracle_count = oracle.count_rows_where(ocur, oracle_schema, oracle_table, table_cfg.where)
+                    postgres_count = postgres.count_rows_where(pcur, pg_schema, pg_table)
+                    diff = postgres_count - oracle_count
+                else:
+                    source_schema = pg_schema
+                    source_table = pg_table
+                    target_schema = oracle_schema
+                    target_table = oracle_table
+                    postgres_count = postgres.count_rows_where(pcur, pg_schema, pg_table, table_cfg.where)
+                    oracle_count = oracle.count_rows_where(ocur, oracle_schema, oracle_table)
+                    diff = oracle_count - postgres_count
+                logger.info(
+                    "Rowcount %s %s -> %s.%s to %s.%s diff=%s",
+                    table_name,
+                    direction,
+                    source_schema,
+                    source_table,
+                    target_schema,
+                    target_table,
+                    diff,
+                )
                 rows.append(
                     {
-                        "table_name": f"{target_schema}.{target_table}",
+                        "table_name": f"{pg_schema}.{pg_table}",
                         "direction": direction,
                         "source_schema": source_schema,
                         "source_table": source_table,
                         "target_schema": target_schema,
                         "target_table": target_table,
                         "effective_where": table_cfg.where or "",
-                        "oracle_row_count": source_count,
-                        "postgres_row_count": target_count,
-                        "row_count_match": source_count == target_count,
+                        "oracle_row_count": oracle_count,
+                        "postgres_row_count": postgres_count,
+                        "row_count_match": oracle_count == postgres_count,
                         "row_count_diff": diff,
-                        "status": "MATCH" if source_count == target_count else "MISMATCH",
-                        "oracle_count_sql_summary": _oracle_count_sql_summary(source_schema, source_table, table_cfg.where),
-                        "postgres_count_sql_summary": _postgres_count_sql_summary(target_schema, target_table),
+                        "status": "MATCH" if oracle_count == postgres_count else "MISMATCH",
+                        "oracle_count_sql_summary": _oracle_count_sql_summary(
+                            oracle_schema,
+                            oracle_table,
+                            table_cfg.where if direction == "oracle-to-postgres" else None,
+                        ),
+                        "postgres_count_sql_summary": _postgres_count_sql_summary(
+                            pg_schema,
+                            pg_table,
+                            table_cfg.where if direction == "postgres-to-oracle" else None,
+                        ),
                     }
                 )
     return rows
@@ -904,8 +934,8 @@ def validate_missing_keys(
     from oracle_pg_sync.db import oracle, postgres
     from oracle_pg_sync.reports.writer_csv import write_csv
 
-    if direction != "oracle-to-postgres":
-        raise SystemExit("missing key validation currently supports oracle-to-postgres")
+    if direction not in {"oracle-to-postgres", "postgres-to-oracle"}:
+        raise SystemExit(f"missing key validation does not support direction={direction}")
     summary: list[dict] = []
     oracle_missing_rows: list[dict] = []
     postgres_missing_rows: list[dict] = []
@@ -918,30 +948,31 @@ def validate_missing_keys(
                 if not keys:
                     raise SystemExit("missing key comparison requires key_columns or primary_key")
                 target = split_schema_table(table_cfg.name, config.postgres.schema)
-                target_schema = table_cfg.target_schema or target.schema
-                target_table = table_cfg.target_table or target.table
-                source_schema = table_cfg.source_schema or config.oracle.schema
-                source_table = table_cfg.source_table or target_table
+                pg_schema = table_cfg.target_schema or target.schema
+                pg_table = table_cfg.target_table or target.table
+                oracle_schema = table_cfg.source_schema or config.oracle.schema
+                oracle_table = table_cfg.source_table or target.table
                 oracle_cursor = oracle.select_rows(
                     ocur,
-                    source_schema,
-                    source_table,
+                    oracle_schema,
+                    oracle_table,
                     [(key.lower(), key.upper()) for key in keys],
-                    where=table_cfg.where,
+                    where=table_cfg.where if direction == "oracle-to-postgres" else None,
                     order_by=[key.upper() for key in keys],
                 )
                 postgres_cursor = postgres.select_rows(
                     pcur,
-                    target_schema,
-                    target_table,
+                    pg_schema,
+                    pg_table,
                     [key.lower() for key in keys],
+                    where=table_cfg.where if direction == "postgres-to-oracle" else None,
                     order_by=[key.lower() for key in keys],
                 )
                 key_diff = _compare_sorted_key_streams(oracle_cursor, postgres_cursor, sample_limit=sample_limit)
                 for key in key_diff.oracle_not_postgres_sample:
-                    oracle_missing_rows.append(_missing_key_row(target_schema, target_table, keys, key))
+                    oracle_missing_rows.append(_missing_key_row(oracle_schema, oracle_table, keys, key))
                 for key in key_diff.postgres_not_oracle_sample:
-                    postgres_missing_rows.append(_missing_key_row(target_schema, target_table, keys, key))
+                    postgres_missing_rows.append(_missing_key_row(pg_schema, pg_table, keys, key))
                 status = (
                     "MATCH"
                     if key_diff.oracle_not_postgres_count == 0 and key_diff.postgres_not_oracle_count == 0
@@ -955,8 +986,10 @@ def validate_missing_keys(
                 )
                 summary.append(
                     {
-                        "table_name": f"{target_schema}.{target_table}",
+                        "table_name": f"{pg_schema}.{pg_table}",
                         "direction": direction,
+                        "oracle_table": f"{oracle_schema}.{oracle_table}",
+                        "postgres_table": f"{pg_schema}.{pg_table}",
                         "key_columns": ";".join(keys),
                         "sample_limit": sample_limit,
                         "oracle_not_postgres_count": key_diff.oracle_not_postgres_count,
@@ -1443,8 +1476,11 @@ def _oracle_count_sql_summary(owner: str, table: str, where: str | None) -> str:
     return query
 
 
-def _postgres_count_sql_summary(schema: str, table: str) -> str:
-    return f"SELECT COUNT(1) FROM {schema}.{table}"
+def _postgres_count_sql_summary(schema: str, table: str, where: str | None = None) -> str:
+    query = f"SELECT COUNT(1) FROM {schema}.{table}"
+    if where:
+        query += f" WHERE {where}"
+    return query
 
 
 def _sync_runner(config: AppConfig, logger: logging.Logger, direction: str):
@@ -1791,13 +1827,14 @@ def _simulate_sync(
 
 def _apply_profile(args: argparse.Namespace) -> None:
     profile = getattr(args, "profile", None)
+    direction = getattr(args, "direction", None)
     if profile == "daily":
         if getattr(args, "mode", None) is None:
-            args.mode = "truncate_safe"
+            args.mode = "truncate" if direction == "postgres-to-oracle" else "truncate_safe"
         args.full_refresh = True
     elif profile == "every_5min":
         if getattr(args, "mode", None) is None:
-            args.mode = "incremental_safe"
+            args.mode = "upsert" if direction == "postgres-to-oracle" else "incremental_safe"
         args.incremental = True
 
 
