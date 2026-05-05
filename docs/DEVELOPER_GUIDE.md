@@ -29,6 +29,19 @@ pytest -q tests/test_ops_smoke.py
 python tests/integration_reverse_merge_container.py
 ```
 
+## Python Module Entry Points
+
+Operator docs use `ops`, but the Python module entry points remain useful for
+local debugging and development:
+
+```bash
+python -m oracle_pg_sync audit --config config.yaml
+python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables public.sample
+python -m oracle_pg_sync sync --config config.yaml --list-runs
+python -m oracle_pg_sync report --config config.yaml
+python -m oracle_pg_sync all --config config.yaml --execute
+```
+
 The PostgreSQL-backed integration probe runs only when `RUN_CONTAINER_TESTS=1`.
 
 ## CI

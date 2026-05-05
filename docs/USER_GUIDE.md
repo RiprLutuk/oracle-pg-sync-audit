@@ -105,26 +105,18 @@ PG_PASSWORD=REDACTED
 PG_SCHEMA=public
 ```
 
-Declare tables inline or by `tables_file`. Typical production usage is `tables_file: configs/tables.yaml`.
-
-Example table entry:
+Typical production usage is `tables_file: configs/tables.yaml`, with that file
+kept list-only:
 
 ```yaml
 tables:
-  - name: public.address
-    directions: [oracle-to-postgres, postgres-to-oracle]
-    oracle_to_postgres_mode: truncate_safe
-    postgres_to_oracle_mode: upsert
-    key_columns: [address_id]
-    incremental:
-      enabled: true
-      strategy: updated_at
-      column: last_update
-      overlap_minutes: 5
-    validation:
-      checksum:
-        enabled: true
+  - public.address
+  - public.housemaster
 ```
+
+Keep per-table defaults and overrides in `config.yaml`. If your team prefers a
+separate snippet file such as `table_overrides.yaml`, merge it into
+`config.yaml` before runtime; the loader does not read that file directly.
 
 ## Audit And Smart Schema Diff
 
@@ -467,6 +459,7 @@ ops audit --config config.yaml --tables A_HP_BATCH
 ops sync --config config.yaml --direction oracle-to-postgres --tables A_HP_BATCH --rowcount-only
 ops validate --config config.yaml --tables A_HP_BATCH --missing-keys
 ops validate missing-keys --config config.yaml --tables A_HP_BATCH
+ops report latest --config config.yaml
 ```
 
 Missing-key validation uses `key_columns` or `primary_key` from config when present. If not, it tries the table `PRIMARY KEY` first and then a `UNIQUE` constraint from Oracle/PostgreSQL. It writes:

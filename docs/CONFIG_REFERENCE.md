@@ -255,16 +255,19 @@ rename_columns:
 
 Use one or the other.
 
-Simple external table file:
+Recommended external table file:
 
 ```yaml
 tables:
-  - name: public.address
-    directions: [oracle-to-postgres, postgres-to-oracle]
-    oracle_to_postgres_mode: truncate_safe
-    postgres_to_oracle_mode: upsert
-    key_columns: [address_id]
+  - public.address
+  - public.housemaster
 ```
+
+Keep `configs/tables.yaml` list-only so scope review stays simple. Put per-table
+defaults and overrides inline in `config.yaml`. If your team wants a separate
+working file such as `table_overrides.yaml`, merge that content into
+`config.yaml` before runtime; the loader only reads `config.yaml` plus
+`tables_file`.
 
 ## Table-Level Keys
 
@@ -285,6 +288,20 @@ Supported table config keys:
 - `incremental`
 - `validation`
 - `lob_strategy`
+
+Example inline override block in `config.yaml`:
+
+```yaml
+tables:
+  - name: public.address
+    directions:
+      - oracle-to-postgres
+      - postgres-to-oracle
+    oracle_to_postgres_mode: truncate_safe
+    postgres_to_oracle_mode: upsert
+    key_columns:
+      - address_id
+```
 
 Manual `--tables` resolution is deterministic:
 

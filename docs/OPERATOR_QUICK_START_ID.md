@@ -116,12 +116,19 @@ Rowcount:
 
 ```bash
 ops validate --config config.yaml --tables public.nama_table
+ops sync --config config.yaml --tables public.nama_table --rowcount-only
 ```
 
 Missing/extra key. Jika `key_columns` belum diset, CLI akan mencoba `PRIMARY KEY` lalu `UNIQUE` constraint dari Oracle/PostgreSQL:
 
 ```bash
 ops validate missing-keys --config config.yaml --tables public.nama_table
+```
+
+Report run terbaru:
+
+```bash
+ops report latest --config config.yaml
 ```
 
 Output missing key:
@@ -196,8 +203,9 @@ ops dependencies repair --config config.yaml
 Job gagal berulang atau cron berhenti karena circuit breaker:
 
 ```bash
-ops circuit status --config config.yaml
-ops circuit reset "JOB_KEY_DARI_STATUS" --config config.yaml
+ops circuit-breaker list --config config.yaml
+ops circuit-breaker reset --table A_HP_BATCH --config config.yaml
+ops circuit-breaker reset --all --config config.yaml
 ```
 
 Reset circuit hanya setelah root cause sudah jelas, data sudah divalidasi atau

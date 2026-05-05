@@ -140,7 +140,7 @@ Recommended operator commands:
 ```bash
 ops status --config config.yaml
 ops report latest --config config.yaml
-ops circuit status --config config.yaml
+ops circuit-breaker list --config config.yaml
 ops dependencies check --config config.yaml
 ```
 
@@ -270,19 +270,19 @@ Production execute jobs should treat repeated failure as a stop condition:
 Check circuit state:
 
 ```bash
-ops circuit status --config config.yaml
+ops circuit-breaker list --config config.yaml
 ```
 
 Reset a circuit only after the failed data path is verified or rolled back:
 
 ```bash
-ops circuit reset "JOB_KEY_FROM_STATUS" --config config.yaml
+ops circuit-breaker reset --table public.address --config config.yaml
 ```
 
 Reset every circuit entry only during controlled recovery:
 
 ```bash
-ops circuit reset --all --config config.yaml
+ops circuit-breaker reset --all --config config.yaml
 ```
 
 ## 10. Post-Change Checklist

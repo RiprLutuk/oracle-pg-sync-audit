@@ -106,4 +106,8 @@ rename_columns:
     legacy_status: status
   public.sample_order:
     legacy_note: note_text
+
+# Keep configs/tables.yaml list-only. Put per-table overrides inline in
+# config.yaml, or maintain them in a separate table_overrides.yaml that your
+# deploy process merges into config.yaml before runtime.
 tables_file: configs/tables.example.yaml

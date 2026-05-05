@@ -19,7 +19,10 @@ from typing import Any
 from oracle_pg_sync.alerting import send_alert
 from oracle_pg_sync.checkpoint import CheckpointStore, new_run_id
 from oracle_pg_sync.config import AppConfig, TableConfig, load_config, load_environment
-from oracle_pg_sync.dependency_health import critical_dependency_rows, summarize_dependency_rows
+from oracle_pg_sync.dependency_health import (
+    critical_dependency_rows,
+    summarize_dependency_rows,
+)
 from oracle_pg_sync.manifest import RunManifest
 from oracle_pg_sync.manifest import sanitize
 from oracle_pg_sync.utils.logging import attach_run_log, setup_logging
@@ -46,9 +49,21 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--limit", type=int, help="Limit table count after table selection")
     audit.add_argument("--fast-count", action="store_true", help="Use statistic count")
     audit.add_argument("--exact-count", action="store_true", help="Use SELECT COUNT(1)")
-    audit.add_argument("--workers", type=int, default=argparse.SUPPRESS, help="Parallel audit workers. Default dari config atau 1")
-    audit.add_argument("--suggest-drop", action="store_true", help="Include DROP COLUMN suggestions for PG-only columns")
-    audit.add_argument("--sql-out", help="Path output SQL suggestion. Default: current run dir/schema_suggestions.sql")
+    audit.add_argument(
+        "--workers",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Parallel audit workers. Default dari config atau 1",
+    )
+    audit.add_argument(
+        "--suggest-drop",
+        action="store_true",
+        help="Include DROP COLUMN suggestions for PG-only columns",
+    )
+    audit.add_argument(
+        "--sql-out",
+        help="Path output SQL suggestion. Default: current run dir/schema_suggestions.sql",
+    )
 
     sync = sub.add_parser("sync", help="Sync data antar Oracle dan PostgreSQL")
     _add_common_args(sync)
@@ -62,21 +77,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync.add_argument(
         "--mode",
-        choices=["truncate", "swap", "append", "upsert", "delete", "truncate_safe", "swap_safe", "incremental_safe"],
+        choices=[
+            "truncate",
+            "swap",
+            "append",
+            "upsert",
+            "delete",
+            "truncate_safe",
+            "swap_safe",
+            "incremental_safe",
+        ],
         help="Override mode",
     )
     sync.add_argument(
         "--where",
         help="Override WHERE filter for this sync run. Intended for one-table jobs, for example cron upsert windows.",
     )
-    sync.add_argument("--key-columns", nargs="+", help="Override key columns for one-table upsert jobs")
+    sync.add_argument(
+        "--key-columns",
+        nargs="+",
+        help="Override key columns for one-table upsert jobs",
+    )
     _add_incremental_override_args(sync)
-    sync.add_argument("--execute", "--go", dest="execute", action="store_true", help="Benar-benar eksekusi perubahan data")
-    sync.add_argument("--lob", choices=["error", "skip", "null", "stream", "include"], help="Override default LOB strategy")
+    sync.add_argument(
+        "--execute",
+        "--go",
+        dest="execute",
+        action="store_true",
+        help="Benar-benar eksekusi perubahan data",
+    )
+    sync.add_argument(
+        "--lob",
+        choices=["error", "skip", "null", "stream", "include"],
+        help="Override default LOB strategy",
+    )
     sync.add_argument("--force", action="store_true", help="Tetap sync walaupun struktur mismatch")
     sync.add_argument("--simulate", action="store_true", help="Risk simulation only; no data changes")
-    sync.add_argument("--no-rowcount-validation", action="store_true", help="Disable post-load rowcount validation")
-    sync.add_argument("--rowcount-only", action="store_true", help="Only validate rowcounts; do not load data")
+    sync.add_argument(
+        "--no-rowcount-validation",
+        action="store_true",
+        help="Disable post-load rowcount validation",
+    )
+    sync.add_argument(
+        "--rowcount-only",
+        action="store_true",
+        help="Only validate rowcounts; do not load data",
+    )
     sync.add_argument(
         "--skip-if-rowcount-match",
         action="store_true",
@@ -89,16 +135,35 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("validate_action", nargs="?", choices=["missing-keys"], help="Validation action")
     validate.add_argument("--tables", nargs="*", help="Override table list")
     validate.add_argument("--tables-file", help="Read table list from YAML/JSON file")
-    validate.add_argument("--direction", choices=["oracle-to-postgres", "postgres-to-oracle"], help="Validation direction")
-    validate.add_argument("--fast-count", action="store_true", help="Use statistic count when no WHERE filter is applied")
-    validate.add_argument("--exact-count", action="store_true", help="Use SELECT COUNT(1) for rowcount validation")
-    validate.add_argument("--missing-keys", action="store_true", help="Compare configured keys and write missing-key CSVs")
+    validate.add_argument(
+        "--direction",
+        choices=["oracle-to-postgres", "postgres-to-oracle"],
+        help="Validation direction",
+    )
+    validate.add_argument(
+        "--fast-count",
+        action="store_true",
+        help="Use statistic count when no WHERE filter is applied",
+    )
+    validate.add_argument(
+        "--exact-count",
+        action="store_true",
+        help="Use SELECT COUNT(1) for rowcount validation",
+    )
+    validate.add_argument(
+        "--missing-keys",
+        action="store_true",
+        help="Compare configured keys and write missing-key CSVs",
+    )
 
     report = sub.add_parser("report", help="Generate report.html dari CSV latest run")
     _add_common_args(report)
     report.add_argument("--tables", nargs="*", help="Tidak dipakai, disediakan agar konsisten")
 
-    objects = sub.add_parser("audit-objects", help="Compare schema objects seperti view, sequence, SP/function, trigger")
+    objects = sub.add_parser(
+        "audit-objects",
+        help="Compare schema objects seperti view, sequence, SP/function, trigger",
+    )
     _add_common_args(objects)
     objects.add_argument(
         "--types",
@@ -111,7 +176,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include PostgreSQL extension-owned objects such as pg_trgm or pg_stat_statements",
     )
 
-    dependencies = sub.add_parser("dependencies", help="List view/SP/function/trigger/sequence dependencies per table")
+    dependencies = sub.add_parser(
+        "dependencies",
+        help="List view/SP/function/trigger/sequence dependencies per table",
+    )
     _add_common_args(dependencies)
     dependencies.add_argument("--tables", nargs="*", help="Override table list")
     dependencies.add_argument("--tables-file", help="Read table list from YAML/JSON file")
@@ -133,21 +201,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     all_cmd.add_argument(
         "--mode",
-        choices=["truncate", "swap", "append", "upsert", "delete", "truncate_safe", "swap_safe", "incremental_safe"],
+        choices=[
+            "truncate",
+            "swap",
+            "append",
+            "upsert",
+            "delete",
+            "truncate_safe",
+            "swap_safe",
+            "incremental_safe",
+        ],
         help="Override mode",
     )
     all_cmd.add_argument(
         "--where",
         help="Override WHERE filter for the sync step. Intended for one-table jobs.",
     )
-    all_cmd.add_argument("--key-columns", nargs="+", help="Override key columns for one-table upsert jobs")
+    all_cmd.add_argument(
+        "--key-columns",
+        nargs="+",
+        help="Override key columns for one-table upsert jobs",
+    )
     _add_incremental_override_args(all_cmd)
-    all_cmd.add_argument("--execute", "--go", dest="execute", action="store_true", help="Benar-benar eksekusi perubahan data")
-    all_cmd.add_argument("--lob", choices=["error", "skip", "null", "stream", "include"], help="Override default LOB strategy")
+    all_cmd.add_argument(
+        "--execute",
+        "--go",
+        dest="execute",
+        action="store_true",
+        help="Benar-benar eksekusi perubahan data",
+    )
+    all_cmd.add_argument(
+        "--lob",
+        choices=["error", "skip", "null", "stream", "include"],
+        help="Override default LOB strategy",
+    )
     all_cmd.add_argument("--force", action="store_true", help="Tetap sync walaupun struktur mismatch")
     all_cmd.add_argument("--simulate", action="store_true", help="Risk simulation only; no data changes")
-    all_cmd.add_argument("--no-rowcount-validation", action="store_true", help="Disable post-load rowcount validation")
-    all_cmd.add_argument("--rowcount-only", action="store_true", help="Only validate rowcounts; do not load data")
+    all_cmd.add_argument(
+        "--no-rowcount-validation",
+        action="store_true",
+        help="Disable post-load rowcount validation",
+    )
+    all_cmd.add_argument(
+        "--rowcount-only",
+        action="store_true",
+        help="Only validate rowcounts; do not load data",
+    )
     all_cmd.add_argument(
         "--skip-if-rowcount-match",
         action="store_true",
@@ -156,47 +255,132 @@ def build_parser() -> argparse.ArgumentParser:
     _add_production_sync_args(all_cmd)
     all_cmd.add_argument("--fast-count", action="store_true", help="Use statistic count")
     all_cmd.add_argument("--exact-count", action="store_true", help="Use SELECT COUNT(1)")
-    all_cmd.add_argument("--suggest-drop", action="store_true", help="Include DROP COLUMN suggestions for PG-only columns")
-    all_cmd.add_argument("--sql-out", help="Path output SQL suggestion. Default: current run dir/schema_suggestions.sql")
+    all_cmd.add_argument(
+        "--suggest-drop",
+        action="store_true",
+        help="Include DROP COLUMN suggestions for PG-only columns",
+    )
+    all_cmd.add_argument(
+        "--sql-out",
+        help="Path output SQL suggestion. Default: current run dir/schema_suggestions.sql",
+    )
 
     return parser
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", default=argparse.SUPPRESS, help="Path config YAML/JSON")
-    parser.add_argument("--env-file", default=argparse.SUPPRESS, help="Path dotenv file. Defaults to .env when present")
-    parser.add_argument("--verbose", action="store_true", default=argparse.SUPPRESS, help="Enable debug logging")
+    parser.add_argument(
+        "--env-file",
+        default=argparse.SUPPRESS,
+        help="Path dotenv file. Defaults to .env when present",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Enable debug logging",
+    )
 
 
 def _add_production_sync_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--profile", choices=["daily", "every_5min"], help="Apply DBA job defaults for daily or every_5min runs")
-    parser.add_argument("--workers", type=int, default=argparse.SUPPRESS, help="Parallel sync workers. Default dari config atau 1")
-    parser.add_argument("--parallel-tables", action="store_true", default=argparse.SUPPRESS, help="Enable per-table parallel sync workers")
-    parser.add_argument("--parallel-chunks", action="store_true", default=argparse.SUPPRESS, help="Enable chunk-level parallel execution for safe append/incremental loads")
-    parser.add_argument("--max-db-connections", type=int, default=argparse.SUPPRESS, help="Maximum PostgreSQL pooled connections for sync workers")
-    parser.add_argument("--respect-dependencies", action="store_true", default=argparse.SUPPRESS, help="Preserve configured table order and disable table parallelism for dependency-sensitive runs")
+    parser.add_argument(
+        "--profile",
+        choices=["daily", "every_5min"],
+        help="Apply DBA job defaults for daily or every_5min runs",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Parallel sync workers. Default dari config atau 1",
+    )
+    parser.add_argument(
+        "--parallel-tables",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Enable per-table parallel sync workers",
+    )
+    parser.add_argument(
+        "--parallel-chunks",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Enable chunk-level parallel execution for safe append/incremental loads",
+    )
+    parser.add_argument(
+        "--max-db-connections",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Maximum PostgreSQL pooled connections for sync workers",
+    )
+    parser.add_argument(
+        "--respect-dependencies",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Preserve configured table order and disable table parallelism for dependency-sensitive runs",
+    )
     parser.add_argument("--resume", metavar="RUN_ID", help="Resume sync run from checkpoint")
-    parser.add_argument("--reset-checkpoint", metavar="RUN_ID", help="Delete checkpoint state for RUN_ID and exit")
+    parser.add_argument(
+        "--reset-checkpoint",
+        metavar="RUN_ID",
+        help="Delete checkpoint state for RUN_ID and exit",
+    )
     parser.add_argument("--list-runs", action="store_true", help="List checkpoint runs and exit")
-    parser.add_argument("--incremental", action="store_true", help="Use table incremental config and stored watermarks")
-    parser.add_argument("--full-refresh", action="store_true", help="Ignore incremental watermark filter for this run")
-    parser.add_argument("--watermark-status", action="store_true", help="List stored watermarks and exit")
-    parser.add_argument("--reset-watermark", metavar="TABLE_NAME", help="Delete stored watermark for TABLE_NAME and exit")
-    parser.add_argument("--lock-file", default="reports/sync.lock", help="Lock file path for scheduled jobs")
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="Use table incremental config and stored watermarks",
+    )
+    parser.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="Ignore incremental watermark filter for this run",
+    )
+    parser.add_argument(
+        "--watermark-status",
+        action="store_true",
+        help="List stored watermarks and exit",
+    )
+    parser.add_argument(
+        "--reset-watermark",
+        metavar="TABLE_NAME",
+        help="Delete stored watermark for TABLE_NAME and exit",
+    )
+    parser.add_argument(
+        "--lock-file",
+        default="reports/sync.lock",
+        help="Lock file path for scheduled jobs",
+    )
     parser.add_argument("--no-lock", action="store_true", help="Disable lock file protection")
-    parser.add_argument("--log-rotate-bytes", type=int, default=10 * 1024 * 1024, help="Rotate reports/sync.log above this size")
+    parser.add_argument(
+        "--log-rotate-bytes",
+        type=int,
+        default=10 * 1024 * 1024,
+        help="Rotate reports/sync.log above this size",
+    )
 
 
 def _add_incremental_override_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--incremental-column", help="Enable incremental override using this source column")
+    parser.add_argument(
+        "--incremental-column",
+        help="Enable incremental override using this source column",
+    )
     parser.add_argument(
         "--incremental-strategy",
         choices=["updated_at", "numeric_key"],
         default=argparse.SUPPRESS,
         help="Incremental override strategy. Default: updated_at",
     )
-    parser.add_argument("--initial-value", help="Initial watermark value when no stored watermark exists")
-    parser.add_argument("--overlap-minutes", type=int, default=argparse.SUPPRESS, help="Updated-at overlap minutes")
+    parser.add_argument(
+        "--initial-value",
+        help="Initial watermark value when no stored watermark exists",
+    )
+    parser.add_argument(
+        "--overlap-minutes",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Updated-at overlap minutes",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -204,10 +388,20 @@ def main(argv: list[str] | None = None) -> int:
     _apply_profile(args)
     load_environment(getattr(args, "env_file", None), config_path=Path(args.config))
     config = load_config(args.config, env_file=getattr(args, "env_file", None))
-    if args.command in {"audit", "sync", "all", "audit-objects", "dependencies", "validate"}:
+    if args.command in {
+        "audit",
+        "sync",
+        "all",
+        "audit-objects",
+        "dependencies",
+        "validate",
+    }:
         _ensure_oracle_client_library_path(config, argv)
     report_dir = Path(config.reports.output_dir)
-    _rotate_log(report_dir / "sync.log", max_bytes=int(getattr(args, "log_rotate_bytes", 10 * 1024 * 1024) or 0))
+    _rotate_log(
+        report_dir / "sync.log",
+        max_bytes=int(getattr(args, "log_rotate_bytes", 10 * 1024 * 1024) or 0),
+    )
     logger = setup_logging(report_dir, logging.DEBUG if args.verbose else logging.INFO)
     _log_resolved_db_config(logger, config)
     _maybe_acquire_lock(args, logger)
@@ -272,10 +466,20 @@ def main(argv: list[str] | None = None) -> int:
                 failed_tables=tables,
             )
             send_alert(config, event="repeated_failure", payload=payload, logger=logger)
-            logger.error("Circuit breaker active for %s until %s", job_key, blocked.get("cooldown_until"))
+            logger.error(
+                "Circuit breaker active for %s until %s",
+                job_key,
+                blocked.get("cooldown_until"),
+            )
             return 1
         if getattr(args, "simulate", False):
-            return _simulate_sync(config, tables, logger, direction=direction, mode=getattr(args, "mode", None))
+            return _simulate_sync(
+                config,
+                tables,
+                logger,
+                direction=direction,
+                mode=getattr(args, "mode", None),
+            )
 
     if args.command == "audit":
         from oracle_pg_sync.reports import write_audit_reports
@@ -356,7 +560,13 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Run log dibuat: %s", run_dir / "logs.txt")
         try:
             if args.validate_action == "missing-keys" or args.missing_keys:
-                rows = validate_missing_keys(config, tables, logger, direction=direction or "oracle-to-postgres", report_dir=run_dir)
+                rows = validate_missing_keys(
+                    config,
+                    tables,
+                    logger,
+                    direction=direction or "oracle-to-postgres",
+                    report_dir=run_dir,
+                )
                 write_csv(run_dir / "missing_keys_summary.csv", rows)
                 _copy_log_to_run_dir(report_dir, run_dir)
                 manifest_path = manifest.finish(
@@ -405,7 +615,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "sync":
         from oracle_pg_sync.reports.writer_csv import write_csv
-        from oracle_pg_sync.reports.writer_excel import write_central_report_xlsx, write_rows_xlsx
+        from oracle_pg_sync.reports.writer_excel import (
+            write_central_report_xlsx,
+            write_rows_xlsx,
+        )
         from oracle_pg_sync.reports.writer_html import write_html_report
         from oracle_pg_sync.rollback import rollback_run
 
@@ -459,7 +672,11 @@ def main(argv: list[str] | None = None) -> int:
         checksum_rows = _checksum_rows_from_results(results, rows)
         if checksum_rows:
             write_csv(run_dir / "validation_checksum.csv", checksum_rows)
-            write_rows_xlsx(run_dir / "validation_checksum.xlsx", checksum_rows, sheet_name="checksum")
+            write_rows_xlsx(
+                run_dir / "validation_checksum.xlsx",
+                checksum_rows,
+                sheet_name="checksum",
+            )
         maintenance_rows = _run_dependency_maintenance(
             config,
             tables,
@@ -543,8 +760,13 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         logger.info("Manifest dibuat: %s", manifest_path)
-        logger.info("Sync selesai. SUCCESS=%s FAILED=%s SKIPPED=%s DRY_RUN=%s",
-                    _count(rows, "SUCCESS"), _count(rows, "FAILED"), _count(rows, "SKIPPED"), _count(rows, "DRY_RUN"))
+        logger.info(
+            "Sync selesai. SUCCESS=%s FAILED=%s SKIPPED=%s DRY_RUN=%s",
+            _count(rows, "SUCCESS"),
+            _count(rows, "FAILED"),
+            _count(rows, "SKIPPED"),
+            _count(rows, "DRY_RUN"),
+        )
         return 1 if run_failed else 0
 
     if args.command == "report":
@@ -663,7 +885,13 @@ def main(argv: list[str] | None = None) -> int:
             dependency_rows=summary_rows,
             report_files=[
                 str(out_path),
-                *_run_report_files(run_dir, "dependency_summary.csv", "report.xlsx", "report.html", "logs.txt"),
+                *_run_report_files(
+                    run_dir,
+                    "dependency_summary.csv",
+                    "report.xlsx",
+                    "report.html",
+                    "logs.txt",
+                ),
             ],
         )
         logger.info("Manifest dibuat: %s", manifest_path)
@@ -673,7 +901,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "all":
         from oracle_pg_sync.reports import write_audit_reports
         from oracle_pg_sync.reports.writer_csv import write_csv
-        from oracle_pg_sync.reports.writer_excel import write_central_report_xlsx, write_rows_xlsx
+        from oracle_pg_sync.reports.writer_excel import (
+            write_central_report_xlsx,
+            write_rows_xlsx,
+        )
         from oracle_pg_sync.reports.writer_html import write_html_report
         from oracle_pg_sync.rollback import rollback_run
 
@@ -717,7 +948,11 @@ def main(argv: list[str] | None = None) -> int:
         checksum_rows = _checksum_rows_from_results(sync_results, sync_rows)
         if checksum_rows:
             write_csv(run_dir / "validation_checksum.csv", checksum_rows)
-            write_rows_xlsx(run_dir / "validation_checksum.xlsx", checksum_rows, sheet_name="checksum")
+            write_rows_xlsx(
+                run_dir / "validation_checksum.xlsx",
+                checksum_rows,
+                sheet_name="checksum",
+            )
         maintenance_rows = _run_dependency_maintenance(
             config,
             tables,
@@ -852,7 +1087,13 @@ def run_audit(config: AppConfig, tables: list[str], logger: logging.Logger, *, w
         try:
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 futures = {
-                    executor.submit(_audit_table_with_execution_context, config, table_name, logger, execution_context): table_name
+                    executor.submit(
+                        _audit_table_with_execution_context,
+                        config,
+                        table_name,
+                        logger,
+                        execution_context,
+                    ): table_name
                     for table_name in tables
                 }
                 for future in as_completed(futures):
@@ -873,14 +1114,23 @@ def run_audit(config: AppConfig, tables: list[str], logger: logging.Logger, *, w
                             [],
                             [],
                         )
-                    _merge_audit_result(result, inventory_rows, column_diff_rows, type_mismatch_rows, dependency_rows)
+                    _merge_audit_result(
+                        result,
+                        inventory_rows,
+                        column_diff_rows,
+                        type_mismatch_rows,
+                        dependency_rows,
+                    )
         finally:
             execution_context.close()
             config.sync.workers = old_workers
             config.sync.parallel_workers = old_parallel_workers
             config.sync.max_db_connections = old_max_connections
     else:
-        with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+        with (
+            oracle.connect(config.oracle) as ocon,
+            postgres.connect(config.postgres, autocommit=True) as pcon,
+        ):
             with ocon.cursor() as ocur, pcon.cursor() as pcur:
                 for table_name in tables:
                     _merge_audit_result(
@@ -911,9 +1161,19 @@ def _validation_rowcount(
         count = fast_counter(cur, schema, table)
         if count is not None:
             return count
-        logger.warning("Statistic rowcount %s %s.%s tidak tersedia; fallback ke SELECT COUNT(1)", db_label, schema, table)
+        logger.warning(
+            "Statistic rowcount %s %s.%s tidak tersedia; fallback ke SELECT COUNT(1)",
+            db_label,
+            schema,
+            table,
+        )
     elif where:
-        logger.info("Rowcount %s %s.%s memakai SELECT COUNT(1) karena WHERE filter aktif", db_label, schema, table)
+        logger.info(
+            "Rowcount %s %s.%s memakai SELECT COUNT(1) karena WHERE filter aktif",
+            db_label,
+            schema,
+            table,
+        )
     else:
         logger.info("Rowcount %s %s.%s memakai SELECT COUNT(1)", db_label, schema, table)
     return exact_counter(cur, schema, table, where)
@@ -932,7 +1192,10 @@ def validate_rowcounts(
     if direction not in {"oracle-to-postgres", "postgres-to-oracle"}:
         raise SystemExit(f"rowcount validation does not support direction={direction}")
     rows: list[dict] = []
-    with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+    with (
+        oracle.connect(config.oracle) as ocon,
+        postgres.connect(config.postgres, autocommit=True) as pcon,
+    ):
         with ocon.cursor() as ocur, pcon.cursor() as pcur:
             for table_name in tables:
                 table_cfg = config.table_config(table_name) or TableConfig(name=table_name)
@@ -1020,16 +1283,16 @@ def validate_rowcounts(
                         "postgres_row_count": postgres_count,
                         "row_count_match": oracle_count == postgres_count,
                         "row_count_diff": diff,
-                        "status": "MATCH" if oracle_count == postgres_count else "MISMATCH",
+                        "status": ("MATCH" if oracle_count == postgres_count else "MISMATCH"),
                         "oracle_count_sql_summary": _oracle_count_sql_summary(
                             oracle_schema,
                             oracle_table,
-                            table_cfg.where if direction == "oracle-to-postgres" else None,
+                            (table_cfg.where if direction == "oracle-to-postgres" else None),
                         ),
                         "postgres_count_sql_summary": _postgres_count_sql_summary(
                             pg_schema,
                             pg_table,
-                            table_cfg.where if direction == "postgres-to-oracle" else None,
+                            (table_cfg.where if direction == "postgres-to-oracle" else None),
                         ),
                     }
                 )
@@ -1053,7 +1316,10 @@ def validate_missing_keys(
     oracle_missing_rows: list[dict] = []
     postgres_missing_rows: list[dict] = []
     sample_limit = max(1, int(config.validation.missing_keys.sample_limit or 1000))
-    with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+    with (
+        oracle.connect(config.oracle) as ocon,
+        postgres.connect(config.postgres, autocommit=True) as pcon,
+    ):
         with ocon.cursor() as ocur, pcon.cursor() as pcur:
             for table_name in tables:
                 table_cfg = config.table_config(table_name) or TableConfig(name=table_name)
@@ -1079,7 +1345,7 @@ def validate_missing_keys(
                     oracle_schema,
                     oracle_table,
                     [(key.lower(), key.upper()) for key in keys],
-                    where=table_cfg.where if direction == "oracle-to-postgres" else None,
+                    where=(table_cfg.where if direction == "oracle-to-postgres" else None),
                     order_by=[key.upper() for key in keys],
                 )
                 postgres_cursor = postgres.select_rows(
@@ -1087,7 +1353,7 @@ def validate_missing_keys(
                     pg_schema,
                     pg_table,
                     [key.lower() for key in keys],
-                    where=table_cfg.where if direction == "postgres-to-oracle" else None,
+                    where=(table_cfg.where if direction == "postgres-to-oracle" else None),
                     order_by=[key.lower() for key in keys],
                 )
                 key_diff = _compare_sorted_key_streams(oracle_cursor, postgres_cursor, sample_limit=sample_limit)
@@ -1095,11 +1361,7 @@ def validate_missing_keys(
                     oracle_missing_rows.append(_missing_key_row(oracle_schema, oracle_table, keys, key))
                 for key in key_diff.postgres_not_oracle_sample:
                     postgres_missing_rows.append(_missing_key_row(pg_schema, pg_table, keys, key))
-                status = (
-                    "MATCH"
-                    if key_diff.oracle_not_postgres_count == 0 and key_diff.postgres_not_oracle_count == 0
-                    else "MISMATCH"
-                )
+                status = "MATCH" if key_diff.oracle_not_postgres_count == 0 and key_diff.postgres_not_oracle_count == 0 else "MISMATCH"
                 logger.info(
                     "Missing keys %s -> oracle_not_pg=%s pg_not_oracle=%s",
                     table_name,
@@ -1151,13 +1413,25 @@ def _resolve_missing_key_columns(
     logger.info("Missing keys %s tidak punya key di config; cek constraint database", table_name)
     if direction == "oracle-to-postgres":
         candidate_loaders = [
-            ("Oracle", lambda: oracle.preferred_key_columns(ocur, oracle_schema, oracle_table)),
-            ("PostgreSQL", lambda: postgres.preferred_key_columns(pcur, pg_schema, pg_table)),
+            (
+                "Oracle",
+                lambda: oracle.preferred_key_columns(ocur, oracle_schema, oracle_table),
+            ),
+            (
+                "PostgreSQL",
+                lambda: postgres.preferred_key_columns(pcur, pg_schema, pg_table),
+            ),
         ]
     else:
         candidate_loaders = [
-            ("PostgreSQL", lambda: postgres.preferred_key_columns(pcur, pg_schema, pg_table)),
-            ("Oracle", lambda: oracle.preferred_key_columns(ocur, oracle_schema, oracle_table)),
+            (
+                "PostgreSQL",
+                lambda: postgres.preferred_key_columns(pcur, pg_schema, pg_table),
+            ),
+            (
+                "Oracle",
+                lambda: oracle.preferred_key_columns(ocur, oracle_schema, oracle_table),
+            ),
         ]
     for source_name, loader in candidate_loaders:
         candidate = loader()
@@ -1169,7 +1443,11 @@ def _resolve_missing_key_columns(
                 ",".join(candidate),
             )
             return candidate
-        logger.info("Missing keys %s: %s tidak punya PRIMARY KEY/UNIQUE constraint yang bisa dipakai", table_name, source_name)
+        logger.info(
+            "Missing keys %s: %s tidak punya PRIMARY KEY/UNIQUE constraint yang bisa dipakai",
+            table_name,
+            source_name,
+        )
     raise SystemExit(
         "missing key comparison requires key_columns/primary_key in config or a PRIMARY KEY/UNIQUE constraint in Oracle/PostgreSQL"
     )
@@ -1184,9 +1462,8 @@ class _KeyDiff:
 
     @property
     def sample_truncated(self) -> bool:
-        return (
-            self.oracle_not_postgres_count > len(self.oracle_not_postgres_sample)
-            or self.postgres_not_oracle_count > len(self.postgres_not_oracle_sample)
+        return self.oracle_not_postgres_count > len(self.oracle_not_postgres_sample) or self.postgres_not_oracle_count > len(
+            self.postgres_not_oracle_sample
         )
 
 
@@ -1259,11 +1536,18 @@ def run_object_audit(
     include_extension_objects: bool = False,
 ):
     from oracle_pg_sync.db import oracle, postgres
-    from oracle_pg_sync.metadata.object_compare import ObjectAuditResult, compare_object_inventory, normalize_object_types
+    from oracle_pg_sync.metadata.object_compare import (
+        ObjectAuditResult,
+        compare_object_inventory,
+        normalize_object_types,
+    )
 
     types = normalize_object_types(object_types)
     logger.info("Audit schema objects types=%s", ",".join(sorted(types)))
-    with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+    with (
+        oracle.connect(config.oracle) as ocon,
+        postgres.connect(config.postgres, autocommit=True) as pcon,
+    ):
         with ocon.cursor() as ocur, pcon.cursor() as pcur:
             oracle_rows = oracle.schema_object_rows(ocur, config.oracle.schema, types)
             postgres_rows = postgres.schema_object_rows(
@@ -1281,7 +1565,10 @@ def run_table_dependency_audit(config: AppConfig, tables: list[str], logger: log
     from oracle_pg_sync.db import oracle, postgres
 
     rows: list[dict] = []
-    with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+    with (
+        oracle.connect(config.oracle) as ocon,
+        postgres.connect(config.postgres, autocommit=True) as pcon,
+    ):
         with ocon.cursor() as ocur, pcon.cursor() as pcur:
             for table_name in tables:
                 table_cfg = config.table_config(table_name) or TableConfig(name=table_name)
@@ -1290,7 +1577,14 @@ def run_table_dependency_audit(config: AppConfig, tables: list[str], logger: log
                 target_table = table_cfg.target_table or target.table
                 source_schema = table_cfg.source_schema or config.oracle.schema
                 source_table = table_cfg.source_table or target_table
-                logger.info("Dependency audit resolved %s -> %s.%s to %s.%s", table_name, source_schema, source_table, target_schema, target_table)
+                logger.info(
+                    "Dependency audit resolved %s -> %s.%s to %s.%s",
+                    table_name,
+                    source_schema,
+                    source_table,
+                    target_schema,
+                    target_table,
+                )
                 rows.extend(oracle.table_object_dependency_rows(ocur, source_schema, source_table))
                 rows.extend(postgres.table_object_dependency_rows(pcur, target_schema, target_table))
     return rows
@@ -1303,7 +1597,10 @@ def _audit_table_with_new_connections(
 ) -> tuple[dict, list[dict], list[dict], list[dict]]:
     from oracle_pg_sync.db import oracle, postgres
 
-    with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+    with (
+        oracle.connect(config.oracle) as ocon,
+        postgres.connect(config.postgres, autocommit=True) as pcon,
+    ):
         with ocon.cursor() as ocur, pcon.cursor() as pcur:
             return _audit_table(config, table_name, ocur, pcur, logger)
 
@@ -1314,7 +1611,10 @@ def _audit_table_with_execution_context(
     logger: logging.Logger,
     execution_context,
 ) -> tuple[dict, list[dict], list[dict], list[dict]]:
-    with execution_context.oracle_connection() as ocon, execution_context.postgres_connection() as pcon:
+    with (
+        execution_context.oracle_connection() as ocon,
+        execution_context.postgres_connection() as pcon,
+    ):
         with ocon.cursor() as ocur, pcon.cursor() as pcur:
             table_logger = execution_context.table_logger(logger, table_name)
             return _audit_table(config, table_name, ocur, pcur, table_logger)
@@ -1323,8 +1623,12 @@ def _audit_table_with_execution_context(
 def _audit_table(config: AppConfig, table_name: str, ocur, pcur, logger: logging.Logger) -> tuple[dict, list[dict], list[dict], list[dict]]:
     from oracle_pg_sync.db import oracle, postgres
     from oracle_pg_sync.metadata.compare import compare_table_metadata
-    from oracle_pg_sync.metadata.oracle_metadata import fetch_table_metadata as fetch_oracle_metadata
-    from oracle_pg_sync.metadata.postgres_metadata import fetch_table_metadata as fetch_pg_metadata
+    from oracle_pg_sync.metadata.oracle_metadata import (
+        fetch_table_metadata as fetch_oracle_metadata,
+    )
+    from oracle_pg_sync.metadata.postgres_metadata import (
+        fetch_table_metadata as fetch_pg_metadata,
+    )
 
     table_cfg = config.table_config(table_name) or TableConfig(name=table_name)
     target = split_schema_table(table_cfg.name, config.postgres.schema)
@@ -1434,7 +1738,10 @@ def _resolve_tables(
     if limit is not None and limit < 1:
         raise SystemExit("--limit must be greater than 0")
     if override:
-        return _apply_limit([config.resolve_table_name(table, strict=False) for table in override], limit)
+        return _apply_limit(
+            [config.resolve_table_name(table, strict=False) for table in override],
+            limit,
+        )
     if tables_file:
         return _apply_limit(_read_table_names_file(Path(tables_file), direction=direction), limit)
     if direction:
@@ -1513,15 +1820,9 @@ def _enforce_level1_sync_guards(args: argparse.Namespace, config: AppConfig, tab
         if not table_cfg.validation.rowcount.fail_on_mismatch:
             warning_only.append(table_name)
     if disabled:
-        raise SystemExit(
-            "table validation.rowcount.enabled=false is not allowed with --go/--execute: "
-            + ", ".join(disabled)
-        )
+        raise SystemExit("table validation.rowcount.enabled=false is not allowed with --go/--execute: " + ", ".join(disabled))
     if warning_only:
-        raise SystemExit(
-            "table validation.rowcount.fail_on_mismatch=false is not allowed with --go/--execute: "
-            + ", ".join(warning_only)
-        )
+        raise SystemExit("table validation.rowcount.fail_on_mismatch=false is not allowed with --go/--execute: " + ", ".join(warning_only))
 
 
 def _single_table_config(config: AppConfig, tables: list[str], flag_name: str) -> TableConfig:
@@ -1595,14 +1896,22 @@ def _ensure_oracle_client_library_path(config: AppConfig, argv: list[str] | None
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = lib_path if not current else f"{lib_path}:{current}"
     env["ORACLE_PG_SYNC_REEXEC"] = "1"
-    script_args = [sys.executable, "-m", "oracle_pg_sync", *(sys.argv[1:] if argv is None else argv)]
+    script_args = [
+        sys.executable,
+        "-m",
+        "oracle_pg_sync",
+        *(sys.argv[1:] if argv is None else argv),
+    ]
     os.execvpe(sys.executable, script_args, env)
 
 
 def _discover_postgres_tables(config: AppConfig, logger: logging.Logger) -> list[str]:
     from oracle_pg_sync.db import postgres
 
-    logger.info("Tidak ada table list. Ambil semua table dari PostgreSQL schema=%s", config.postgres.schema)
+    logger.info(
+        "Tidak ada table list. Ambil semua table dari PostgreSQL schema=%s",
+        config.postgres.schema,
+    )
     with postgres.connect(config.postgres, autocommit=True) as pcon:
         with pcon.cursor() as cur:
             tables = postgres.list_tables(cur, config.postgres.schema)
@@ -1740,7 +2049,10 @@ def _run_dependency_maintenance(
     rows: list[dict] = []
     maintenance_dependencies = _unique_dependency_objects(dependency_rows)
     try:
-        with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+        with (
+            oracle.connect(config.oracle) as ocon,
+            postgres.connect(config.postgres, autocommit=True) as pcon,
+        ):
             with ocon.cursor() as ocur, pcon.cursor() as pcur:
                 attempts = max(
                     1,
@@ -1756,17 +2068,25 @@ def _run_dependency_maintenance(
                     ocon.commit()
                     post_attempt_invalid = oracle.invalid_object_rows(ocur, config.oracle.schema) if hasattr(ocur, "execute") else []
                     remaining_keys = {
-                        (str(item.get("object_schema")), str(item.get("object_type")), str(item.get("object_name")))
+                        (
+                            str(item.get("object_schema")),
+                            str(item.get("object_type")),
+                            str(item.get("object_name")),
+                        )
                         for item in post_attempt_invalid
                     }
                     for row in attempt_rows:
-                        key = (str(row.get("object_schema")), str(row.get("object_type")), str(row.get("object_name")))
+                        key = (
+                            str(row.get("object_schema")),
+                            str(row.get("object_type")),
+                            str(row.get("object_name")),
+                        )
                         rows.append(
                             {
                                 **row,
                                 "attempt": attempt,
-                                "maintenance_status": "fixed" if key not in remaining_keys else "failed",
-                                "validation_status": "valid" if key not in remaining_keys else "invalid",
+                                "maintenance_status": ("fixed" if key not in remaining_keys else "failed"),
+                                "validation_status": ("valid" if key not in remaining_keys else "invalid"),
                             }
                         )
                     remaining_invalid = post_attempt_invalid
@@ -1786,14 +2106,16 @@ def _run_dependency_maintenance(
                 rows.extend(postgres.validate_dependent_objects(pcur, maintenance_dependencies))
     except Exception as exc:
         logger.exception("Dependency maintenance failed")
-        rows.append({
-            "source_db": "",
-            "object_schema": "",
-            "object_type": "DEPENDENCY_MAINTENANCE",
-            "object_name": "",
-            "maintenance_status": "failed",
-            "error_message": str(exc),
-        })
+        rows.append(
+            {
+                "source_db": "",
+                "object_schema": "",
+                "object_type": "DEPENDENCY_MAINTENANCE",
+                "object_name": "",
+                "maintenance_status": "failed",
+                "error_message": str(exc),
+            }
+        )
     write_csv(report_dir / "dependency_maintenance.csv", rows)
     logger.info("Dependency maintenance selesai rows=%s tables=%s", len(rows), len(tables))
     return rows
@@ -1865,7 +2187,7 @@ def _metrics_rows(results: list[Any], rollback_rows: list[dict] | None = None) -
             {
                 "table_name": "__rollback__",
                 "mode": "",
-                "status": "SUCCESS" if all(row.get("status") == "SUCCESS" for row in rollback_rows) else "FAILED",
+                "status": ("SUCCESS" if all(row.get("status") == "SUCCESS" for row in rollback_rows) else "FAILED"),
                 "elapsed_seconds": 0,
                 "rows_loaded": 0,
                 "rows_per_second": None,
@@ -1900,7 +2222,7 @@ def _write_metrics_json(run_dir: Path, metrics_rows: list[dict]) -> None:
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "summary": {
             "total_parallel_workers": len(throughput_per_worker),
-            "avg_table_duration": round(sum(elapsed_values) / len(elapsed_values), 3) if elapsed_values else 0.0,
+            "avg_table_duration": (round(sum(elapsed_values) / len(elapsed_values), 3) if elapsed_values else 0.0),
             "slowest_table": {
                 "table_name": slowest_table.get("table_name", ""),
                 "elapsed_seconds": float(slowest_table.get("elapsed_seconds") or 0),
@@ -1937,7 +2259,12 @@ def _alert_payload(*, run_id: str, direction: str | None, error: str, failed_tab
     }
 
 
-def _job_key(config: AppConfig, args: argparse.Namespace, direction: str | None, tables: list[str]) -> str:
+def _job_key(
+    config: AppConfig,
+    args: argparse.Namespace,
+    direction: str | None,
+    tables: list[str],
+) -> str:
     key = getattr(config.job, "name", "") or Path(getattr(args, "config", "config.yaml")).stem
     return f"{key}:{getattr(args, 'command', '')}:{direction or ''}:{','.join(sorted(tables))}"
 
@@ -1951,11 +2278,18 @@ def _simulate_sync(
     mode: str | None,
 ) -> int:
     from oracle_pg_sync.db import oracle, postgres
-    from oracle_pg_sync.metadata.oracle_metadata import fetch_table_metadata as fetch_oracle_metadata
-    from oracle_pg_sync.metadata.postgres_metadata import fetch_table_metadata as fetch_pg_metadata
+    from oracle_pg_sync.metadata.oracle_metadata import (
+        fetch_table_metadata as fetch_oracle_metadata,
+    )
+    from oracle_pg_sync.metadata.postgres_metadata import (
+        fetch_table_metadata as fetch_pg_metadata,
+    )
 
     rows: list[dict[str, Any]] = []
-    with oracle.connect(config.oracle) as ocon, postgres.connect(config.postgres, autocommit=True) as pcon:
+    with (
+        oracle.connect(config.oracle) as ocon,
+        postgres.connect(config.postgres, autocommit=True) as pcon,
+    ):
         with ocon.cursor() as ocur, pcon.cursor() as pcur:
             dependency_rows = run_table_dependency_audit(config, tables, logger)
             dependency_map: dict[str, int] = {}
@@ -1969,7 +2303,9 @@ def _simulate_sync(
                 estimated_rows = int(oracle_meta.row_count or 0)
                 estimated_seconds = round(estimated_rows / 10000, 3) if estimated_rows else 0
                 relation_size = postgres.total_relation_size_bytes(pcur, table.schema, table.table) or 0
-                effective_mode = mode or (config.table_config(table_name).mode if config.table_config(table_name) else config.sync.default_mode)
+                effective_mode = mode or (
+                    config.table_config(table_name).mode if config.table_config(table_name) else config.sync.default_mode
+                )
                 risk = "low"
                 if dependency_map.get(table.fqname, 0) > 10 or relation_size > 1024**3:
                     risk = "high"
@@ -2018,7 +2354,15 @@ def _rotate_log(path: Path, *, max_bytes: int) -> None:
 def _maybe_acquire_lock(args: argparse.Namespace, logger: logging.Logger):
     if getattr(args, "command", "") not in {"sync", "all"} or getattr(args, "no_lock", False):
         return None
-    if any(getattr(args, attr, None) for attr in ("list_runs", "reset_checkpoint", "watermark_status", "reset_watermark")):
+    if any(
+        getattr(args, attr, None)
+        for attr in (
+            "list_runs",
+            "reset_checkpoint",
+            "watermark_status",
+            "reset_watermark",
+        )
+    ):
         return None
     path = Path(getattr(args, "lock_file", "reports/sync.lock"))
     path.parent.mkdir(parents=True, exist_ok=True)

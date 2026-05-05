@@ -13,14 +13,34 @@ from oracle_pg_sync.checkpoint import CheckpointStore, Chunk, RollbackAction, ne
 from oracle_pg_sync.config import AppConfig, TableConfig
 from oracle_pg_sync.db import oracle, postgres
 from oracle_pg_sync.lob import apply_lob_mapping_policy, lob_summary_to_fields
-from oracle_pg_sync.metadata.compare import compare_table_metadata, inventory_has_fatal_mismatch
-from oracle_pg_sync.metadata.oracle_metadata import fetch_table_metadata as fetch_oracle_metadata
-from oracle_pg_sync.metadata.postgres_metadata import fetch_table_metadata as fetch_pg_metadata
+from oracle_pg_sync.metadata.compare import (
+    compare_table_metadata,
+    inventory_has_fatal_mismatch,
+)
+from oracle_pg_sync.metadata.oracle_metadata import (
+    fetch_table_metadata as fetch_oracle_metadata,
+)
+from oracle_pg_sync.metadata.postgres_metadata import (
+    fetch_table_metadata as fetch_pg_metadata,
+)
 from oracle_pg_sync.sync.copy_loader import CopyMetrics, copy_rows
-from oracle_pg_sync.sync.runtime import DirectSyncExecutionContext, SyncExecutionContext, create_sync_execution_context
-from oracle_pg_sync.sync.staging import atomic_swap, create_backup_table, create_staging_like, drop_table
+from oracle_pg_sync.sync.runtime import (
+    DirectSyncExecutionContext,
+    SyncExecutionContext,
+    create_sync_execution_context,
+)
+from oracle_pg_sync.sync.staging import (
+    atomic_swap,
+    create_backup_table,
+    create_staging_like,
+    drop_table,
+)
 from oracle_pg_sync.utils.naming import oracle_name, split_schema_table
-from oracle_pg_sync.validation import checksum_columns, checksum_result_row, stable_cursor_hash
+from oracle_pg_sync.validation import (
+    checksum_columns,
+    checksum_result_row,
+    stable_cursor_hash,
+)
 
 
 @dataclass
@@ -125,7 +145,7 @@ class SyncResult:
             "row_count_diff": self.row_count_diff,
             "validation_status": self.validation_status,
             "data_integrity_status": self.data_integrity_status,
-            "failed_row_samples": json.dumps(self.failed_row_samples, ensure_ascii=True) if self.failed_row_samples else "",
+            "failed_row_samples": (json.dumps(self.failed_row_samples, ensure_ascii=True) if self.failed_row_samples else ""),
             "missing_key_report_files": self.missing_key_report_files,
             "lob_copy_status": self.lob_copy_status,
             "lob_columns_included": self.lob_columns_included,
@@ -190,10 +210,7 @@ class OracleToPostgresSync:
                 mode=mode_override or self.config.sync.default_mode,
             )
         execution_context = create_sync_execution_context(self.config, self.logger)
-        table_order = {
-            self.config.resolve_table_name(name, strict=False): index
-            for index, name in enumerate(tables)
-        }
+        table_order = {self.config.resolve_table_name(name, strict=False): index for index, name in enumerate(tables)}
         results: list[SyncResult] = []
         try:
             if execution_context.allow_table_parallelism(len(tables)):
@@ -246,7 +263,7 @@ class OracleToPostgresSync:
         if checkpoint_store:
             checkpoint_store.finish_run(
                 run_id,
-                status="failed" if any(result.status == "FAILED" for result in results) else "success",
+                status=("failed" if any(result.status == "FAILED" for result in results) else "success"),
             )
         return results
 
@@ -322,12 +339,7 @@ class OracleToPostgresSync:
         target_schema = table_cfg.target_schema or split_schema_table(table_cfg.name, self.config.postgres.schema).schema
         target_table = table_cfg.target_table or split_schema_table(table_cfg.name, self.config.postgres.schema).table
         table = split_schema_table(f"{target_schema}.{target_table}", self.config.postgres.schema)
-        mode = (
-            mode_override
-            or table_cfg.oracle_to_postgres_mode
-            or table_cfg.mode
-            or self.config.sync.default_mode
-        ).lower()
+        mode = (mode_override or table_cfg.oracle_to_postgres_mode or table_cfg.mode or self.config.sync.default_mode).lower()
         mode = self._normalize_mode(mode, incremental=incremental or table_cfg.incremental.enabled)
         dry_run = not execute or self.config.sync.dry_run and not execute
 
@@ -352,7 +364,10 @@ class OracleToPostgresSync:
         self.logger.info("Sync %s mode=%s dry_run=%s", table.fqname, mode, dry_run)
 
         try:
-            with execution_context.oracle_connection() as ocon, execution_context.postgres_connection() as pcon:
+            with (
+                execution_context.oracle_connection() as ocon,
+                execution_context.postgres_connection() as pcon,
+            ):
                 with ocon.cursor() as ocur, pcon.cursor() as pcur:
                     owner = result.source_schema
                     source_table = result.source_table
@@ -511,7 +526,11 @@ class OracleToPostgresSync:
                         result.checksum_rows = checksum_rows
                         if checksum_rows:
                             _apply_checksum_summary(result, checksum_rows)
-                        result.oracle_row_count, result.postgres_row_count, result.row_count_match = self._safe_rowcount_validation(
+                        (
+                            result.oracle_row_count,
+                            result.postgres_row_count,
+                            result.row_count_match,
+                        ) = self._safe_rowcount_validation(
                             ocur,
                             pcur,
                             owner,
@@ -582,7 +601,11 @@ class OracleToPostgresSync:
                         result.checksum_rows = checksum_rows
                         if checksum_rows:
                             _apply_checksum_summary(result, checksum_rows)
-                        result.oracle_row_count, result.postgres_row_count, result.row_count_match = self._safe_rowcount_validation(
+                        (
+                            result.oracle_row_count,
+                            result.postgres_row_count,
+                            result.row_count_match,
+                        ) = self._safe_rowcount_validation(
                             ocur,
                             pcur,
                             owner,
@@ -648,7 +671,11 @@ class OracleToPostgresSync:
                         result.checksum_rows = checksum_rows
                         if checksum_rows:
                             _apply_checksum_summary(result, checksum_rows)
-                        result.oracle_row_count, result.postgres_row_count, result.row_count_match = self._safe_rowcount_validation(
+                        (
+                            result.oracle_row_count,
+                            result.postgres_row_count,
+                            result.row_count_match,
+                        ) = self._safe_rowcount_validation(
                             ocur,
                             pcur,
                             owner,
@@ -725,7 +752,11 @@ class OracleToPostgresSync:
                     if result.checksum_status == "MISMATCH":
                         raise RuntimeError("checksum mismatch after load")
                     if self._rowcount_validation_enabled(table_cfg):
-                        result.oracle_row_count, result.postgres_row_count, result.row_count_match = self._safe_rowcount_validation(
+                        (
+                            result.oracle_row_count,
+                            result.postgres_row_count,
+                            result.row_count_match,
+                        ) = self._safe_rowcount_validation(
                             ocur,
                             pcur,
                             owner,
@@ -755,7 +786,12 @@ class OracleToPostgresSync:
                         result.message = result.message or "data integrity validation incomplete"
                     elif result.status != "WARNING":
                         result.status = "SUCCESS"
-                    if self.config.sync.analyze_after_load and mode in {"truncate", "truncate_safe", "swap_safe", "incremental_safe"}:
+                    if self.config.sync.analyze_after_load and mode in {
+                        "truncate",
+                        "truncate_safe",
+                        "swap_safe",
+                        "incremental_safe",
+                    }:
                         postgres.analyze_table(pcur, table.schema, table.table)
                     result.watermark_candidate = self._build_watermark_candidate(
                         table_cfg,
@@ -798,7 +834,10 @@ class OracleToPostgresSync:
             return result
         finally:
             result.elapsed_seconds = time.time() - started
-            self._finalize_metrics(result, load_result.metrics if "load_result" in locals() else CopyMetrics())
+            self._finalize_metrics(
+                result,
+                load_result.metrics if "load_result" in locals() else CopyMetrics(),
+            )
 
     def _sync_truncate(
         self,
@@ -993,17 +1032,13 @@ class OracleToPostgresSync:
         key_set = {k.lower() for k in key_columns}
         update_columns = [c for c in pg_columns if c.lower() not in key_set]
         conflict_action = (
-            sql.SQL("DO UPDATE SET {}").format(sql.SQL(", ").join(
-                sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(c), sql.Identifier(c))
-                for c in update_columns
-            ))
+            sql.SQL("DO UPDATE SET {}").format(
+                sql.SQL(", ").join(sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(c), sql.Identifier(c)) for c in update_columns)
+            )
             if update_columns
             else sql.SQL("DO NOTHING")
         )
-        insert_stmt = sql.SQL(
-            "INSERT INTO {} ({cols}) SELECT {cols} FROM {} "
-            "ON CONFLICT ({keys}) {}"
-        ).format(
+        insert_stmt = sql.SQL("INSERT INTO {} ({cols}) SELECT {cols} FROM {} ON CONFLICT ({keys}) {}").format(
             table_ident(schema, target_table),
             table_ident(staging_schema, staging),
             conflict_action,
@@ -1067,17 +1102,12 @@ class OracleToPostgresSync:
         update_columns = [c for c in columns if c.lower() not in key_set]
         conflict_action = (
             sql.SQL("DO UPDATE SET {}").format(
-                sql.SQL(", ").join(
-                    sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(c), sql.Identifier(c))
-                    for c in update_columns
-                )
+                sql.SQL(", ").join(sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(c), sql.Identifier(c)) for c in update_columns)
             )
             if update_columns
             else sql.SQL("DO NOTHING")
         )
-        insert_stmt = sql.SQL(
-            "INSERT INTO {} ({cols}) SELECT {cols} FROM {} ON CONFLICT ({keys}) {}"
-        ).format(
+        insert_stmt = sql.SQL("INSERT INTO {} ({cols}) SELECT {cols} FROM {} ON CONFLICT ({keys}) {}").format(
             table_ident(schema, target_table),
             table_ident(staging_schema, staging_table),
             conflict_action,
@@ -1170,7 +1200,11 @@ class OracleToPostgresSync:
                     chunk=chunk,
                 )
             if chunk.chunk_key in resume_successful:
-                self.logger.info("Skip successful checkpoint chunk %s %s", chunk.table_name, chunk.chunk_key)
+                self.logger.info(
+                    "Skip successful checkpoint chunk %s %s",
+                    chunk.table_name,
+                    chunk.chunk_key,
+                )
                 continue
             if checkpoint_store and not checkpoint_store.claim_chunk(run_id, chunk.table_name, chunk.chunk_key):
                 self.logger.info(
@@ -1234,7 +1268,11 @@ class OracleToPostgresSync:
     ) -> int:
         total = 0
         worker_count = min(execution_context.workers, len(chunks))
-        self.logger.info("Parallel chunk copy enabled chunks=%s workers=%s", len(chunks), worker_count)
+        self.logger.info(
+            "Parallel chunk copy enabled chunks=%s workers=%s",
+            len(chunks),
+            worker_count,
+        )
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
             futures = {
                 pool.submit(
@@ -1283,7 +1321,11 @@ class OracleToPostgresSync:
                 chunk=chunk,
             )
         if chunk.chunk_key in resume_successful:
-            chunk_logger.info("Skip successful checkpoint chunk %s %s", chunk.table_name, chunk.chunk_key)
+            chunk_logger.info(
+                "Skip successful checkpoint chunk %s %s",
+                chunk.table_name,
+                chunk.chunk_key,
+            )
             return 0, CopyMetrics()
         if checkpoint_store and not checkpoint_store.claim_chunk(run_id, chunk.table_name, chunk.chunk_key):
             chunk_logger.info(
@@ -1296,7 +1338,10 @@ class OracleToPostgresSync:
 
         metrics = CopyMetrics()
         try:
-            with execution_context.oracle_connection() as ocon, execution_context.postgres_connection() as pcon:
+            with (
+                execution_context.oracle_connection() as ocon,
+                execution_context.postgres_connection() as pcon,
+            ):
                 with ocon.cursor() as ocur, pcon.cursor() as pcur:
                     rows = chunk_sync._copy_oracle_to_pg(
                         ocur,
@@ -1418,14 +1463,23 @@ class OracleToPostgresSync:
         try:
             min_value, max_value = oracle.min_max(ocur, owner, table, column)
         except Exception:
-            return [Chunk(table_name=table_fqname, chunk_key="full", where=where, primary_key=column)]
-        if (
-            min_value is None
-            or max_value is None
-            or not isinstance(min_value, int | float)
-            or not isinstance(max_value, int | float)
-        ):
-            return [Chunk(table_name=table_fqname, chunk_key="full", where=where, primary_key=column)]
+            return [
+                Chunk(
+                    table_name=table_fqname,
+                    chunk_key="full",
+                    where=where,
+                    primary_key=column,
+                )
+            ]
+        if min_value is None or max_value is None or not isinstance(min_value, int | float) or not isinstance(max_value, int | float):
+            return [
+                Chunk(
+                    table_name=table_fqname,
+                    chunk_key="full",
+                    where=where,
+                    primary_key=column,
+                )
+            ]
         chunks: list[Chunk] = []
         start = int(min_value)
         end_max = int(max_value)
@@ -1459,17 +1513,20 @@ class OracleToPostgresSync:
             return None
         if cfg.strategy == "oracle_scn":
             raise NotImplementedError(
-                "incremental.strategy=oracle_scn belum diimplementasikan; "
-                "gunakan updated_at/numeric_key atau --full-refresh"
+                "incremental.strategy=oracle_scn belum diimplementasikan; gunakan updated_at/numeric_key atau --full-refresh"
             )
         if not cfg.column:
             raise ValueError(f"Incremental enabled for {table_name} but incremental.column is empty")
-        value = checkpoint_store.get_watermark(
-            direction="oracle_to_postgres",
-            table_name=table_name,
-            strategy=cfg.strategy,
-            column_name=cfg.column,
-        ) if checkpoint_store else None
+        value = (
+            checkpoint_store.get_watermark(
+                direction="oracle_to_postgres",
+                table_name=table_name,
+                strategy=cfg.strategy,
+                column_name=cfg.column,
+            )
+            if checkpoint_store
+            else None
+        )
         value = value if value not in (None, "") else cfg.initial_value
         if value in (None, ""):
             return None
@@ -1477,10 +1534,7 @@ class OracleToPostgresSync:
         if cfg.strategy == "numeric_key":
             return f"{column} > {value}"
         if cfg.strategy == "updated_at":
-            return (
-                f"{column} >= TO_TIMESTAMP('{value}', 'YYYY-MM-DD\"T\"HH24:MI:SS')"
-                f" - INTERVAL '{int(cfg.overlap_minutes or 0)}' MINUTE"
-            )
+            return f"{column} >= TO_TIMESTAMP('{value}', 'YYYY-MM-DD\"T\"HH24:MI:SS') - INTERVAL '{int(cfg.overlap_minutes or 0)}' MINUTE"
         raise ValueError(f"Unsupported incremental strategy: {cfg.strategy}")
 
     def _build_watermark_candidate(
@@ -1595,7 +1649,12 @@ class OracleToPostgresSync:
         try:
             return postgres.total_relation_size_bytes(pcur, schema, table)
         except Exception:
-            self.logger.debug("Cannot estimate PostgreSQL relation size for %s.%s", schema, table, exc_info=True)
+            self.logger.debug(
+                "Cannot estimate PostgreSQL relation size for %s.%s",
+                schema,
+                table,
+                exc_info=True,
+            )
             return None
 
     def _dry_run_message(self, table_name: str, mode: str, column_count: int, swap_size: int | None) -> str:
@@ -1634,8 +1693,7 @@ class OracleToPostgresSync:
             )
             return
         self.logger.warning(
-            "Mode swap untuk %s: current table=%s, perkiraan storage tambahan=%s. "
-            "Pastikan free storage RDS cukup.",
+            "Mode swap untuk %s: current table=%s, perkiraan storage tambahan=%s. Pastikan free storage RDS cukup.",
             table_name,
             self._format_bytes(swap_size),
             self._format_bytes(estimate),

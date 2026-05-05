@@ -97,7 +97,10 @@ tables:
   - public.a_hp_house_info
 ```
 
-Detail run yang berubah-ubah seperti `where`, `key_columns`, dan incremental column lebih aman ditaruh di command/job script.
+Jaga `configs/tables.yaml` tetap list-only. Simpan default atau override per-table
+di `config.yaml`. Jika tim Anda suka memisahkan snippet override, simpan di file
+seperti `configs/table_overrides.example.yaml` lalu gabungkan ke `config.yaml`
+sebelum runtime.
 
 Rename column Oracle ke PostgreSQL:
 
@@ -108,58 +111,27 @@ rename_columns:
 ```
 
 Daftar `tables` real disimpan di satu tempat: `configs/tables.yaml`.
-`config.yaml` cukup memakai `tables_file: configs/tables.yaml` untuk
-menghindari dua table list yang bisa berbeda.
+`config.yaml` cukup memakai `tables_file: configs/tables.yaml` agar scope table
+mudah diaudit.
 
 ## Command
 
-Audit metadata, rowcount, dependency:
+Gunakan `ops` untuk command operator sehari-hari:
 
 ```bash
-python -m oracle_pg_sync audit --config config.yaml
-python -m oracle_pg_sync audit --config config.yaml --tables sample_customer sample_order
-python -m oracle_pg_sync audit --config config.yaml --all-postgres-tables --fast-count
-python -m oracle_pg_sync audit-objects --config config.yaml
-python -m oracle_pg_sync audit --config config.yaml --suggest-drop
+ops doctor --config config.yaml
+ops audit --config config.yaml --tables public.sample_customer --exact-count
+ops sync --config config.yaml --direction oracle-to-postgres --tables public.sample_customer --mode truncate_safe
+ops sync --config config.yaml --direction oracle-to-postgres --tables public.sample_customer --mode truncate_safe --go
+ops sync --config config.yaml --direction oracle-to-postgres --tables public.sample_customer --rowcount-only
+ops validate --config config.yaml --tables public.sample_customer --missing-keys
+ops report latest --config config.yaml
 ```
 
-Kalau `tables` kosong, command `audit` otomatis mengambil semua table dari
-PostgreSQL schema di config, sama seperti script `example/verify_oracle_pg.py`
-lama. Jika config masih punya table list tapi ingin compare semua table
-PostgreSQL, gunakan `--all-postgres-tables`. Hasil audit juga membuat
-`schema_suggestions.sql` di folder run berisi saran `ALTER TABLE ADD COLUMN`;
-opsi `--suggest-drop` menambahkan saran `DROP COLUMN` untuk kolom yang hanya
-ada di PostgreSQL.
-
-Sync Oracle ke PostgreSQL dry-run, default aman. Default mode sekarang
-`truncate` supaya index, trigger, grants, view/materialized view dependency
-tetap nempel ke table yang sama dan tidak membuat staging table besar:
+Reverse sync example:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables-file configs/tables.yaml --limit 10
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables-file configs/tables.yaml --incremental
-```
-
-Sync PostgreSQL ke Oracle dry-run:
-
-```bash
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate
-python -m oracle_pg_sync sync --config config.yaml \
-  --direction postgres-to-oracle \
-  --tables public.address \
-  --mode upsert \
-  --key-columns address_id \
-  --incremental-column last_update \
-  --incremental
-```
-
-Eksekusi sync sungguhan:
-
-```bash
-python -m oracle_pg_sync sync --config config.yaml --direction oracle-to-postgres --tables sample_customer --execute
-python -m oracle_pg_sync sync --config config.yaml --direction postgres-to-oracle --tables sample_customer --mode truncate --execute
-ops sync --go \
+ops sync --config config.yaml \
   --direction postgres-to-oracle \
   --tables public.address \
   --mode upsert \
@@ -169,57 +141,21 @@ ops sync --go \
   --incremental
 ```
 
-Checkpoint/resume dan watermark:
+Checkpoint/resume, watermark, dan circuit breaker:
 
 ```bash
-python -m oracle_pg_sync sync --config config.yaml --list-runs
-python -m oracle_pg_sync sync --config config.yaml --resume RUN_ID --execute
-python -m oracle_pg_sync sync --config config.yaml --reset-checkpoint RUN_ID
-python -m oracle_pg_sync sync --config config.yaml --watermark-status
-python -m oracle_pg_sync sync --config config.yaml --reset-watermark public.sample_customer
-```
-
-Generate ulang HTML dari CSV:
-
-```bash
-python -m oracle_pg_sync report --config config.yaml
-```
-
-DBA-friendly alias:
-
-```bash
-ops audit
-ops sync
-ops sync --go
 ops resume
-ops status
-ops circuit status
-ops report latest
-```
-
-Untuk operator yang tidak perlu detail teknis, mulai dari:
-
-```bash
-ops doctor --config config.yaml
-ops audit --config config.yaml --tables public.nama_table --exact-count
-ops sync --config config.yaml --direction oracle-to-postgres --tables public.nama_table --mode truncate_safe
-ops sync --config config.yaml --direction oracle-to-postgres --tables public.nama_table --mode truncate_safe --go
+ops watermarks --config config.yaml
+ops reset-watermark public.sample_customer --config config.yaml
+ops circuit-breaker list --config config.yaml
+ops circuit-breaker reset --table A_HP_BATCH --config config.yaml
 ops report latest --config config.yaml
 ```
 
 Panduan langkah demi langkah ada di [Panduan Operator Awam](docs/OPERATOR_QUICK_START_ID.md).
 
-Audit, sync, audit ulang, report:
-
-```bash
-python -m oracle_pg_sync all --config config.yaml --execute
-```
-
-Jika sudah install editable:
-
-```bash
-oracle-pg-sync-audit audit --config config.yaml
-```
+Entry point `python -m ...` tetap tersedia untuk debugging dan development;
+contohnya dipindahkan ke [Developer Guide](docs/DEVELOPER_GUIDE.md).
 
 ## Output Report
 
@@ -300,7 +236,7 @@ eksplisit di cron.
   Oracle `BLOB`, `CLOB`, `NCLOB`, `LONG`, dan `LONG RAW` terdeteksi end-to-end.
 - DBA shortcut CLI tersedia sebagai `ops`, misalnya `ops sync --go --lob stream`,
   `ops doctor`, `ops dependencies check`, `ops dependencies repair`,
-  `ops analyze lob`, `ops circuit status`, dan `ops resume RUN_ID`.
+  `ops analyze lob`, `ops circuit-breaker list`, dan `ops resume RUN_ID`.
 - Sync membuat dependency report sebelum dan sesudah load: `dependency_pre.csv` dan `dependency_post.csv`.
 - Dependency health diringkas di `dependency_summary.csv`, manifest, Excel, dan HTML.
 - Saat execute, toolkit mencoba Oracle invalid object compile dan PostgreSQL MV refresh/validation.

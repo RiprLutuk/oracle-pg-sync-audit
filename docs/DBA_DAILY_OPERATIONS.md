@@ -35,9 +35,9 @@ di-install editable atau shell sudah berada di root project.
 | Buka path report terakhir | `ops report latest --config config.yaml` |
 | Lihat watermark incremental | `ops watermarks --config config.yaml` |
 | Reset watermark table | `ops reset-watermark public.table_name --config config.yaml` |
-| Lihat circuit breaker | `ops circuit status --config config.yaml` |
-| Reset circuit breaker | `ops circuit reset JOB_KEY --config config.yaml` |
-| Reset semua circuit breaker | `ops circuit reset --all --config config.yaml` |
+| Lihat circuit breaker | `ops circuit-breaker list --config config.yaml` |
+| Reset circuit breaker per table | `ops circuit-breaker reset --table A_HP_BATCH --config config.yaml` |
+| Reset semua circuit breaker | `ops circuit-breaker reset --all --config config.yaml` |
 | Rollback run safe mode | `ops rollback RUN_ID --config config.yaml` |
 | Repair dependency | `ops dependencies repair --config config.yaml` |
 
@@ -63,7 +63,7 @@ ops sync --config config.yaml --direction oracle-to-postgres --tables public.tab
 Setelah execute:
 
 ```bash
-ops validate --config config.yaml --direction oracle-to-postgres --tables public.table_name
+ops sync --config config.yaml --direction oracle-to-postgres --tables public.table_name --rowcount-only
 ops validate missing-keys --config config.yaml --direction oracle-to-postgres --tables public.table_name
 ops report latest --config config.yaml
 ```
@@ -265,7 +265,7 @@ ops validate --config config.yaml --tables public.table_name --missing-keys
 
 Syarat:
 
-- Table harus punya `key_columns` di config atau key override yang sesuai workflow.
+- Table sebaiknya punya `key_columns` di config; jika tidak, CLI akan mencoba `PRIMARY KEY` lalu `UNIQUE` constraint dari Oracle/PostgreSQL.
 - Key harus stabil dan unik secara bisnis.
 - Untuk table besar, jalankan saat koneksi stabil karena compare melakukan full sorted streaming compare.
 
@@ -431,7 +431,7 @@ oracle_to_pg_daily:sync:oracle-to-postgres:public.address,public.housemaster
 ### Cek Circuit Breaker
 
 ```bash
-ops circuit status --config config.yaml
+ops circuit-breaker list --config config.yaml
 ```
 
 Output:
@@ -451,13 +451,13 @@ Exit code:
 Reset satu job:
 
 ```bash
-ops circuit reset "oracle_to_pg_daily:sync:oracle-to-postgres:public.address" --config config.yaml
+ops circuit-breaker reset --table public.address --config config.yaml
 ```
 
 Reset semua:
 
 ```bash
-ops circuit reset --all --config config.yaml
+ops circuit-breaker reset --all --config config.yaml
 ```
 
 Reset hanya boleh dilakukan setelah:
@@ -729,7 +729,7 @@ Risiko:
 | Checksum mismatch | cek `validation_checksum.csv` | missing-key compare dan cek column/date precision |
 | LOB gagal | `ops analyze lob --tables ...` | sync ulang dengan policy `stream`, `skip`, atau `null` |
 | Dependency invalid | `ops dependencies check` | `ops dependencies repair` |
-| Cron gagal berulang | `ops circuit status` | rollback/validate, lalu `ops circuit reset` |
+| Cron gagal berulang | `ops circuit-breaker list` | rollback/validate, lalu `ops circuit-breaker reset` |
 | Incremental salah window | `ops watermarks` | `ops reset-watermark TABLE` dengan approval |
 
 ## Cron DBA Checklist

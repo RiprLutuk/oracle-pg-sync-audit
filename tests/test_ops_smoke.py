@@ -36,10 +36,14 @@ tables:
                 encoding="utf-8",
             )
 
-            with patch("oracle_pg_sync.cli._write_dependency_report", return_value=[]), patch(
-                "oracle_pg_sync.cli._run_dependency_maintenance",
-                return_value=[],
-            ), patch("oracle_pg_sync.cli._sync_runner", return_value=_FakeRunner()):
+            with (
+                patch("oracle_pg_sync.cli._write_dependency_report", return_value=[]),
+                patch(
+                    "oracle_pg_sync.cli._run_dependency_maintenance",
+                    return_value=[],
+                ),
+                patch("oracle_pg_sync.cli._sync_runner", return_value=_FakeRunner()),
+            ):
                 status = ops_main(
                     [
                         "sync",
@@ -150,9 +154,72 @@ tables:
             self.assertEqual(reset_status, 0)
             self.assertIn("reset_job_key,job:sync", output.getvalue())
 
+    def test_ops_circuit_breaker_list_and_reset_by_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reports_dir = Path(tmp) / "reports"
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text(
+                f"""
+oracle:
+  schema: APP
+postgres:
+  schema: public
+reports:
+  output_dir: {reports_dir}
+sync:
+  checkpoint_dir: {reports_dir}/checkpoints/checkpoint.sqlite3
+  max_failures: 3
+tables:
+  - public.sample
+""",
+                encoding="utf-8",
+            )
+            from oracle_pg_sync.checkpoint import CheckpointStore
+
+            store = CheckpointStore(reports_dir / "checkpoints" / "checkpoint.sqlite3")
+            store.register_job_failure(
+                "oracle_to_pg_daily:sync:oracle-to-postgres:public.a_hp_batch",
+                cooldown_minutes=30,
+                error_message="boom",
+            )
+
+            with redirect_stdout(StringIO()) as output:
+                status = ops_main(["circuit-breaker", "list", "--config", str(config_path)])
+
+            self.assertEqual(status, 0)
+            self.assertIn("public.a_hp_batch", output.getvalue())
+
+            with redirect_stdout(StringIO()) as output:
+                reset_status = ops_main(
+                    [
+                        "circuit-breaker",
+                        "reset",
+                        "--table",
+                        "A_HP_BATCH",
+                        "--config",
+                        str(config_path),
+                    ]
+                )
+
+            self.assertEqual(reset_status, 0)
+            self.assertIn(
+                "reset_job_key,oracle_to_pg_daily:sync:oracle-to-postgres:public.a_hp_batch",
+                output.getvalue(),
+            )
+            self.assertIn("reset_count,1", output.getvalue())
+
     def test_ops_dependencies_check_delegates_to_old_cli(self):
         with patch("oracle_pg_sync.ops.cli_main", return_value=0) as cli:
-            status = ops_main(["dependencies", "check", "--config", "config.yaml", "--tables", "public.sample"])
+            status = ops_main(
+                [
+                    "dependencies",
+                    "check",
+                    "--config",
+                    "config.yaml",
+                    "--tables",
+                    "public.sample",
+                ]
+            )
 
         self.assertEqual(status, 0)
         cli.assert_called_once_with(["dependencies", "--config", "config.yaml", "--tables", "public.sample"])

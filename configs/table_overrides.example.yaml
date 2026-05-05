@@ -1,0 +1,22 @@
+# Example snippet for per-table overrides.
+# Runtime does not load this file automatically.
+# Merge the relevant blocks into config.yaml before running the tool.
+
+tables:
+  - name: public.address
+    directions:
+      - oracle-to-postgres
+      - postgres-to-oracle
+    oracle_to_postgres_mode: truncate_safe
+    postgres_to_oracle_mode: upsert
+    key_columns:
+      - address_id
+    incremental:
+      enabled: true
+      strategy: updated_at
+      column: last_update
+      overlap_minutes: 5
+    validation:
+      rowcount:
+        enabled: true
+        fail_on_mismatch: true

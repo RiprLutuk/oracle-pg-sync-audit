@@ -1,5 +1,8 @@
 [build-system]
-requires = ["setuptools>=75", "wheel"]
+requires = [
+    "setuptools>=75",
+    "wheel",
+]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,23 +12,23 @@ description = "Oracle to PostgreSQL sync, metadata audit, and DBA reporting tool
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "oracledb>=2.4.1",
-  "psycopg[binary]>=3.2.3",
-  "psycopg-pool>=3.2.3",
-  "python-dotenv>=1.0.1",
-  "PyYAML>=6.0.2",
-  "pandas>=2.2.3",
-  "openpyxl>=3.1.5",
+    "oracledb>=2.4.1",
+    "psycopg[binary]>=3.2.3",
+    "psycopg-pool>=3.2.3",
+    "python-dotenv>=1.0.1",
+    "PyYAML>=6.0.2",
+    "pandas>=2.2.3",
+    "openpyxl>=3.1.5",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "bandit>=1.7.10",
-  "black>=24.10.0",
-  "openpyxl>=3.1.5",
-  "pip-audit>=2.7.3",
-  "pytest>=8.3.4",
-  "ruff>=0.8.0",
+    "bandit>=1.7.10",
+    "black>=24.10.0",
+    "openpyxl>=3.1.5",
+    "pip-audit>=2.7.3",
+    "pytest>=8.3.4",
+    "ruff>=0.8.0",
 ]
 
 [project.scripts]

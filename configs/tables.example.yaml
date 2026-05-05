@@ -1,3 +1,4 @@
+# Keep this file list-only so table scope is easy to review.
 tables:
   - public.sample_customer
   - public.sample_order

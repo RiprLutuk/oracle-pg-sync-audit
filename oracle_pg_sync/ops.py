@@ -7,7 +7,12 @@ from pathlib import Path
 
 from oracle_pg_sync.checkpoint import CheckpointStore
 from oracle_pg_sync.cli import main as cli_main
-from oracle_pg_sync.config import env_status, load_config, load_environment, missing_required_env_vars
+from oracle_pg_sync.config import (
+    env_status,
+    load_config,
+    load_environment,
+    missing_required_env_vars,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,12 +66,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if command == "circuit":
         return _circuit(rest)
+    if command == "circuit-breaker":
+        return _circuit_breaker(rest)
     print(f"Unsupported ops command: {command}")
     return 2
 
 
 def _print_usage() -> None:
-    print("Usage: ops audit|sync|rollback|resume|status|circuit|watermarks|reset-watermark|validate|report|doctor ...")
+    print("Usage: ops audit|sync|rollback|resume|status|circuit|circuit-breaker|watermarks|reset-watermark|validate|report|doctor ...")
     print("")
     print("Common:")
     print("  ops --env-file .env.prod doctor --config config.yaml")
@@ -79,6 +86,9 @@ def _print_usage() -> None:
     print("  ops status --config config.yaml")
     print("  ops circuit status --config config.yaml")
     print("  ops circuit reset JOB_KEY --config config.yaml")
+    print("  ops circuit-breaker list --config config.yaml")
+    print("  ops circuit-breaker reset --table A_HP_BATCH --config config.yaml")
+    print("  ops circuit-breaker reset --all --config config.yaml")
     print("  ops report latest --config config.yaml")
     print("  ops doctor --config config.yaml")
     print("  ops dependencies check --config config.yaml")
@@ -98,17 +108,59 @@ def _doctor(args: list[str]) -> int:
 
     loaded, env_path = env_status()
     missing_env = missing_required_env_vars(config)
-    rows.append(("env_loaded", "OK" if loaded or not missing_env else "ERROR", f"{env_path} loaded" if loaded else "no .env loaded"))
-    rows.append(("missing_env_vars", "OK" if not missing_env else "ERROR", "none" if not missing_env else ";".join(missing_env)))
-    rows.append(("resolved_pg_host", "OK" if config.postgres.host else "ERROR", str(config.postgres.host or "")))
-    rows.append(("resolved_oracle_host", "OK" if config.oracle.host or config.oracle.dsn else "ERROR", str(config.oracle.host or config.oracle.dsn or "")))
-    rows.append(("pg_host", "OK" if config.postgres.host else "ERROR", str(config.postgres.host or "")))
-    rows.append(("pg_user", "OK" if config.postgres.user else "ERROR", str(config.postgres.user or "")))
+    rows.append(
+        (
+            "env_loaded",
+            "OK" if loaded or not missing_env else "ERROR",
+            f"{env_path} loaded" if loaded else "no .env loaded",
+        )
+    )
+    rows.append(
+        (
+            "missing_env_vars",
+            "OK" if not missing_env else "ERROR",
+            "none" if not missing_env else ";".join(missing_env),
+        )
+    )
+    rows.append(
+        (
+            "resolved_pg_host",
+            "OK" if config.postgres.host else "ERROR",
+            str(config.postgres.host or ""),
+        )
+    )
+    rows.append(
+        (
+            "resolved_oracle_host",
+            "OK" if config.oracle.host or config.oracle.dsn else "ERROR",
+            str(config.oracle.host or config.oracle.dsn or ""),
+        )
+    )
+    rows.append(
+        (
+            "pg_host",
+            "OK" if config.postgres.host else "ERROR",
+            str(config.postgres.host or ""),
+        )
+    )
+    rows.append(
+        (
+            "pg_user",
+            "OK" if config.postgres.user else "ERROR",
+            str(config.postgres.user or ""),
+        )
+    )
     critical = critical or bool(missing_env)
 
     offline = "--offline" in args
     table_source = f"tables_file={config.tables_file}" if config.tables_file else "inline tables"
-    rows.append(("table_config", "OK", f"{len(config.tables)} tables configured from {table_source}"))
+    rows.append(
+        (
+            "table_config",
+            "OK",
+            f"{len(config.tables)} tables configured from {table_source}",
+        )
+    )
     rows.append(("checkpoint_db", "OK", str(config.sync.checkpoint_dir)))
     lock_path = _arg_value(args, "--lock-file") or "reports/sync.lock"
     rows.append(("job_lock_file", "OK", lock_path))
@@ -194,6 +246,80 @@ def _circuit(args: list[str]) -> int:
         return 0
     print(f"Unsupported circuit action: {action}")
     return 2
+
+
+def _circuit_breaker(args: list[str]) -> int:
+    if not args or args[0] in {"-h", "--help"}:
+        print("Usage: ops circuit-breaker list|reset [--table TABLE|--all] [--config config.yaml]")
+        return 0 if args and args[0] in {"-h", "--help"} else 2
+    action = args[0]
+    rest = args[1:]
+    config = _load_config(rest)
+    store = CheckpointStore(config.sync.checkpoint_dir)
+    if action == "list":
+        return _print_circuit_breaker_rows(store, config)
+    if action == "reset":
+        table_name = _arg_value(rest, "--table")
+        if "--all" in rest:
+            count = store.clear_all_job_failures()
+            print(f"reset_count,{count}")
+            return 0
+        if table_name:
+            return _reset_circuit_breakers_for_table(store, table_name)
+        print("Usage: ops circuit-breaker reset [--table TABLE|--all] [--config config.yaml]")
+        return 2
+    print(f"Unsupported circuit-breaker action: {action}")
+    return 2
+
+
+def _print_circuit_breaker_rows(store: CheckpointStore, config) -> int:
+    rows = store.list_circuit_breakers()
+    print("job_key,failure_count,last_failure_at,cooldown_until,blocked,last_error")
+    for row in rows:
+        job_key = str(row.get("job_key") or "")
+        blocked = "yes" if store.job_blocked(job_key, max_failures=config.sync.max_failures) else "no"
+        print(
+            ",".join(
+                [
+                    job_key,
+                    str(row.get("failure_count") or 0),
+                    str(row.get("last_failure_at") or ""),
+                    str(row.get("cooldown_until") or ""),
+                    blocked,
+                    str(row.get("last_error") or "").replace("\n", " "),
+                ]
+            )
+        )
+    return 1 if any(store.job_blocked(str(row.get("job_key") or ""), max_failures=config.sync.max_failures) for row in rows) else 0
+
+
+def _reset_circuit_breakers_for_table(store: CheckpointStore, table_name: str) -> int:
+    matches = [
+        str(row.get("job_key") or "")
+        for row in store.list_circuit_breakers()
+        if _job_key_matches_table(str(row.get("job_key") or ""), table_name)
+    ]
+    for job_key in matches:
+        store.clear_job_failures(job_key)
+        print(f"reset_job_key,{job_key}")
+    print(f"reset_count,{len(matches)}")
+    return 0
+
+
+def _job_key_matches_table(job_key: str, table_name: str) -> bool:
+    requested = table_name.strip().strip('"').lower()
+    if not requested:
+        return False
+    tail = job_key.rsplit(":", 1)[-1]
+    for item in tail.split(","):
+        candidate = item.strip().strip('"').lower()
+        if not candidate:
+            continue
+        if candidate == requested:
+            return True
+        if "." in candidate and candidate.rsplit(".", 1)[-1] == requested:
+            return True
+    return False
 
 
 def _dependencies(args: list[str]) -> int:
@@ -378,7 +504,11 @@ def _check_oracle(config) -> tuple[str, str, str]:
                 )
                 visible = int(cur.fetchone()[0] or 0)
         if visible <= 0:
-            return ("oracle_connection", "WARNING", f"connected but no visible columns under schema {config.oracle.schema}")
+            return (
+                "oracle_connection",
+                "WARNING",
+                f"connected but no visible columns under schema {config.oracle.schema}",
+            )
         return ("oracle_connection", "OK", "connected")
     except Exception as exc:
         return ("oracle_connection", "ERROR", str(exc))
@@ -394,17 +524,21 @@ def _check_postgres(config) -> list[tuple[str, str, str]]:
                 cur.fetchone()
                 cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'pgcrypto'")
                 pgcrypto = cur.fetchone() is not None
-                cur.execute("SELECT has_schema_privilege(current_user, %s, 'USAGE')", (config.postgres.schema,))
+                cur.execute(
+                    "SELECT has_schema_privilege(current_user, %s, 'USAGE')",
+                    (config.postgres.schema,),
+                )
                 schema_usage = bool(cur.fetchone()[0])
-                cur.execute("SELECT has_schema_privilege(current_user, %s, 'CREATE')", (config.postgres.schema,))
+                cur.execute(
+                    "SELECT has_schema_privilege(current_user, %s, 'CREATE')",
+                    (config.postgres.schema,),
+                )
                 schema_create = bool(cur.fetchone()[0])
         ext_status = "OK" if pgcrypto else "WARNING"
         ext_message = "pgcrypto installed" if pgcrypto else "pgcrypto extension not installed"
         privilege_status = "OK" if schema_usage else "ERROR"
         privilege_message = (
-            f"USAGE on schema {config.postgres.schema}"
-            if schema_usage
-            else f"missing USAGE on schema {config.postgres.schema}"
+            f"USAGE on schema {config.postgres.schema}" if schema_usage else f"missing USAGE on schema {config.postgres.schema}"
         )
         return [
             ("postgres_connection", "OK", "connected"),
@@ -440,7 +574,11 @@ def _check_dependency_health(config) -> tuple[str, str, str]:
         rows = run_table_dependency_audit(config, tables, logging.getLogger("ops.doctor"))
         broken = len(critical_dependency_rows(rows))
         if broken:
-            return ("dependency_health", "ERROR", f"{broken} broken dependency rows in first {len(tables)} tables")
+            return (
+                "dependency_health",
+                "ERROR",
+                f"{broken} broken dependency rows in first {len(tables)} tables",
+            )
         return ("dependency_health", "OK", f"checked first {len(tables)} tables")
     except Exception as exc:
         return ("dependency_health", "WARNING", str(exc))
