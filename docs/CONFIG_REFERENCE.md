@@ -43,7 +43,26 @@ postgres:
   user: ${PG_USER}
   password: ${PG_PASSWORD}
   schema: ${PG_SCHEMA:-public}
+  connect_timeout: ${PG_CONNECT_TIMEOUT:-5}
 ```
+
+`connect_timeout` controls each PostgreSQL connection attempt. Keep it short
+for scheduled jobs so DNS/network failures retry quickly instead of blocking one
+attempt for a long time.
+
+Connection retry environment variables:
+
+```bash
+PG_CONNECT_TIMEOUT=5
+ORACLE_PG_SYNC_CONNECT_RETRIES=8
+ORACLE_PG_SYNC_CONNECT_RETRY_DELAY_SECONDS=1
+ORACLE_PG_SYNC_CONNECT_RETRY_MAX_DELAY_SECONDS=30
+ORACLE_PG_SYNC_CONNECT_RETRY_JITTER_SECONDS=0.5
+```
+
+These retries cover transient DNS/RDS errors such as temporary name resolution
+failure. Permanent DNS, VPN, route, security group, or resolver issues still
+need infrastructure repair.
 
 ### `sync`
 
@@ -183,7 +202,7 @@ validation:
     exclude_lob_by_default: true
   rowcount:
     enabled: true
-    fail_on_mismatch: true
+    fail_on_mismatch: false
   missing_keys:
     enabled: true
     sample_limit: 1000
@@ -194,7 +213,7 @@ Behavior:
 - checksum reads rows in batches
 - default `columns: auto` excludes LOB columns
 - output goes to `validation_checksum.csv` and report sheets when enabled
-- rowcount validation runs after successful loads and fails the table on mismatch by default
+- rowcount validation runs after successful loads; mismatches are committed as `WARNING` with `row_count_diff`
 - missing-key validation compares configured keys and writes sample CSV files
 
 ### `lob_strategy`

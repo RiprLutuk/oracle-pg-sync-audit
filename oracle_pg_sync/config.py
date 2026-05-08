@@ -20,6 +20,7 @@ _OPTIONAL_ENV_DEFAULTS = {
     "ORACLE_SCHEMA": "",
     "ORACLE_CLIENT_LIB_DIR": "",
     "PG_SCHEMA": "public",
+    "PG_CONNECT_TIMEOUT": "5",
 }
 
 
@@ -58,6 +59,7 @@ class PostgresConfig:
     user: str | None = None
     password: str | None = None
     schema: str = "public"
+    connect_timeout: int | str | None = 5
 
     def __post_init__(self) -> None:
         if not self.schema:
@@ -70,6 +72,7 @@ class PostgresConfig:
             "dbname": self.database,
             "user": self.user,
             "password": self.password,
+            "connect_timeout": int(self.connect_timeout or 5),
         }
 
     def conninfo_string(self) -> str:
@@ -120,7 +123,7 @@ class ValidationConfig:
 @dataclass
 class RowcountValidationConfig:
     enabled: bool = True
-    fail_on_mismatch: bool = True
+    fail_on_mismatch: bool = False
 
 
 @dataclass

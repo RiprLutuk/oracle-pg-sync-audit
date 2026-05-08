@@ -16,6 +16,7 @@ postgres:
   user: ${PG_USER}
   password: ${PG_PASSWORD}
   schema: ${PG_SCHEMA:-public}
+  connect_timeout: ${PG_CONNECT_TIMEOUT:-5}
 sync:
   default_direction: oracle-to-postgres
   default_mode: truncate_safe

@@ -26,6 +26,9 @@ oracle_connection,OK
 ```
 
 Kalau ada DNS/host error, jalankan ulang setelah koneksi stabil. Tool sudah punya retry untuk koneksi, tapi DNS yang benar-benar down tetap harus dibetulkan dari jaringan/VPN/DNS.
+Untuk cron paralel, gunakan nilai `.env` yang lebih sabar:
+`PG_CONNECT_TIMEOUT=5`, `ORACLE_PG_SYNC_CONNECT_RETRIES=8`, dan
+`ORACLE_PG_SYNC_CONNECT_RETRY_JITTER_SECONDS=0.5`.
 
 ## 2. Audit Sebelum Sync
 
@@ -67,7 +70,8 @@ ops sync \
   --config config.yaml \
   --direction oracle-to-postgres \
   --tables public.nama_table \
-  --mode truncate_safe
+  --mode truncate_safe \
+  --skip-if-rowcount-match
 ```
 
 Untuk table dengan BLOB/CLOB yang memang harus bisa dibuka oleh aplikasi, gunakan LOB stream/include:
@@ -82,6 +86,19 @@ ops sync \
 ```
 
 `stream` menyimpan BLOB Oracle ke PostgreSQL sebagai `bytea`, sehingga aplikasi bisa membaca isi binary-nya selama kolom target dan aplikasi memang memakai tipe tersebut.
+
+Kalau data non-LOB harus tetap masuk tapi isi BLOB/CLOB boleh dikosongkan, gunakan `--lob null`:
+
+```bash
+ops sync \
+  --config config.yaml \
+  --direction oracle-to-postgres \
+  --tables public.nama_table \
+  --mode truncate_safe \
+  --lob null
+```
+
+Policy ini tetap mengisi kolom biasa dan menulis `NULL` ke kolom LOB. Pastikan kolom LOB di target nullable.
 
 ## 4. Execute Sync
 
@@ -167,7 +184,8 @@ data_integrity_status
 `data_integrity_status`:
 
 - `PASS`: copy selesai, rowcount valid, checksum tidak mismatch, dan tidak ada failed rows.
-- `FAIL`: rowcount mismatch, checksum mismatch, row copy tidak lengkap, atau `rows_failed > 0`.
+- `WARN`: copy selesai dan di-commit, tapi rowcount source/target berbeda. Cek `row_count_diff`.
+- `FAIL`: checksum mismatch, row copy tidak lengkap, atau `rows_failed > 0`.
 - `UNKNOWN`: copy selesai tapi validasi wajib belum lengkap, sehingga status table tidak boleh dianggap bersih.
 
 ## 7. Jika Ada Masalah

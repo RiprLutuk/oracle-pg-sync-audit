@@ -150,6 +150,33 @@ decision matrix, use [DBA Daily Operations Guide](DBA_DAILY_OPERATIONS.md).
 
 ## 6. Cron Deployment
 
+Oracle -> PostgreSQL production keep-up:
+
+```bash
+jobs/production_keepup.sh oracle_to_pg
+```
+
+This wrapper reads the default table list from `config.yaml` /
+`configs/tables.yaml`, runs an execute sync, then runs exact rowcount
+validation. To sync only a subset, pass `TABLES`:
+
+```bash
+TABLES="public.a_hp_batch public.a_hp_batch_detail" jobs/production_keepup.sh oracle_to_pg
+```
+
+Install the example crontab:
+
+```bash
+crontab -e
+# paste jobs/crontab.production.example
+```
+
+Cutoff is intentionally manual. Run it only after Oracle writes are frozen:
+
+```bash
+FREEZE_CONFIRMED=yes TIMEOUT_SECONDS=21600 jobs/production_cutoff.sh oracle_to_pg
+```
+
 Full refresh:
 
 ```bash
@@ -219,7 +246,7 @@ By default checksum excludes `BLOB`, `CLOB`, `NCLOB`, `LONG`, `LONG RAW`, and `b
 
 ### Rowcount Mismatch
 
-A rowcount mismatch makes the table fail when `validation.rowcount.fail_on_mismatch: true`. No watermark is updated for failed runs.
+A rowcount mismatch is committed as `WARNING` and reported in `row_count_diff`. Treat the table as needing review, but the loaded rows remain in PostgreSQL.
 
 1. Check `source_schema`, `source_table`, `target_schema`, `target_table`, and `effective_where` in `sync_result.csv`.
 2. Re-run exact validation:

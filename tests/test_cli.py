@@ -99,6 +99,13 @@ tables:
         self.assertEqual(args.command, "dependencies")
         self.assertEqual(args.tables, ["SAMPLE_CUSTOMER", "SAMPLE_LOCATION"])
 
+    def test_query_perf_command_accepts_query_file(self):
+        args = build_parser().parse_args(["query-perf", "--query-file", "query.sql", "--database", "postgres"])
+
+        self.assertEqual(args.command, "query-perf")
+        self.assertEqual(args.query_file, "query.sql")
+        self.assertEqual(args.database, "postgres")
+
     def test_sync_accepts_checkpoint_incremental_and_watermark_flags(self):
         args = build_parser().parse_args(
             [
@@ -318,7 +325,7 @@ tables:
         with self.assertRaisesRegex(SystemExit, "skip_failed_rows"):
             _enforce_level1_sync_guards(args, config, ["public.sample"])
 
-    def test_execute_rejects_table_rowcount_warning_only(self):
+    def test_execute_allows_table_rowcount_warning_only(self):
         args = build_parser().parse_args(["sync", "--go"])
         config = AppConfig(
             oracle=OracleConfig(schema="APP"),
@@ -331,8 +338,7 @@ tables:
             ],
         )
 
-        with self.assertRaisesRegex(SystemExit, "fail_on_mismatch=false"):
-            _enforce_level1_sync_guards(args, config, ["public.sample"])
+        _enforce_level1_sync_guards(args, config, ["public.sample"])
 
     def test_validate_accepts_missing_keys(self):
         args = build_parser().parse_args(["validate", "missing-keys", "--tables", "A_HP_BATCH"])

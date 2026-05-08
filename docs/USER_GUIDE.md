@@ -118,6 +118,43 @@ Keep per-table defaults and overrides in `config.yaml`. If your team prefers a
 separate snippet file such as `table_overrides.yaml`, merge it into
 `config.yaml` before runtime; the loader does not read that file directly.
 
+## Query Performance Report
+
+Use `query-perf` to compare one dynamic SELECT query on Oracle and PostgreSQL.
+The command writes a run folder with:
+
+- `query_perf_summary.csv`
+- `query_perf_recommendations.csv`
+- `query_perf_report.html`
+- `query_variants.sql`
+- PostgreSQL JSON plans and Oracle plan text files
+
+Example:
+
+```bash
+oracle-pg-sync-audit query-perf \
+  --config config.yaml \
+  --query-file queries/hp_batch_candidates.sql \
+  --database both \
+  --timeout-seconds 300
+```
+
+The input file must contain one `SELECT` or `WITH` query. The tool benchmarks a
+count-wrapper form of the query, so large result sets are not fetched to the
+client. PostgreSQL uses `EXPLAIN (ANALYZE, BUFFERS, VERBOSE, SETTINGS, FORMAT
+JSON)` and also executes the count-wrapper to verify result counts across
+variants. Oracle uses `EXPLAIN PLAN` plus measured execution time of the same
+count-wrapper.
+
+By default the tool also creates heuristic refactor candidates when it can:
+
+- comma/implicit joins are rewritten into ANSI `JOIN`
+- simple `NOT IN (SELECT ...)` filters are rewritten into `NOT EXISTS`
+
+For `NOT IN` to `NOT EXISTS`, verify NULL semantics before using the refactor in
+application SQL. If the subquery column can contain `NULL`, the two forms can
+return different results.
+
 ## Audit And Smart Schema Diff
 
 Run a schema/data audit:
@@ -348,6 +385,14 @@ LOB strategies:
 - `stream`
 - `include` (normalized internally to `stream`)
 
+Use `--lob null` when rows should still load but LOB payloads are intentionally left empty:
+
+```bash
+ops sync --config config.yaml --direction oracle-to-postgres --tables public.sample_customer --mode truncate_safe --lob null
+```
+
+This keeps regular columns in the load and inserts `NULL` for detected LOB columns. Target LOB columns must be nullable or have a default.
+
 With `--lob include` or `--lob stream`, Oracle LOB objects are read with `read()`. BLOB-like values are sent to PostgreSQL `bytea` in hex format, and CLOB/NCLOB/LONG text has embedded NUL bytes removed. LOB read errors fail the table instead of silently dropping rows.
 
 Checksum excludes LOB columns by default because Oracle BLOB/CLOB and PostgreSQL bytea/text can have different binary representations even when the application value is correct. Use separate LOB validation by size or hash when you need LOB-specific proof.
@@ -450,7 +495,7 @@ Every successful Oracle -> PostgreSQL load validates rowcount by default:
 - Oracle count uses the resolved `source_schema`, `source_table`, and `effective_where`
 - PostgreSQL count uses the resolved `target_schema` and `target_table`
 - safe modes validate staging before cutover
-- a mismatch fails the table when `validation.rowcount.fail_on_mismatch: true`
+- a mismatch commits the loaded rows and marks the table `WARNING` with `row_count_diff`
 
 Useful commands:
 

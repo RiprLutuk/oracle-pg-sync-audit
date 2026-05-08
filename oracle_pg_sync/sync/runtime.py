@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import sys
 import threading
-import time
 from contextlib import contextmanager
 from typing import Any
 
 from oracle_pg_sync.config import AppConfig
 from oracle_pg_sync.db import oracle, postgres
+from oracle_pg_sync.utils.retry import connect_retry
 
 
 class PrefixedLoggerAdapter(logging.LoggerAdapter):
@@ -195,17 +195,7 @@ def create_sync_execution_context(config: AppConfig, logger: logging.Logger) -> 
 
 
 def _connect_with_retry(factory, *, logger: logging.Logger, label: str):
-    last_error: Exception | None = None
-    for attempt, delay in enumerate((0, 1, 2, 4), start=1):
-        try:
-            return factory()
-        except Exception as exc:
-            last_error = exc
-            if attempt >= 4:
-                break
-            logger.warning("%s failed attempt=%s retry_in=%ss error=%s", label, attempt, delay or 1, exc)
-            time.sleep(delay or 1)
-    raise RuntimeError(f"{label} retry exhausted") from last_error
+    return connect_retry(factory, label=label, logger=logger)
 
 
 def _is_pool_timeout(exc: Exception) -> bool:

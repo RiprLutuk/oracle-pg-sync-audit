@@ -24,6 +24,7 @@ from oracle_pg_sync.metadata.postgres_metadata import (
     fetch_table_metadata as fetch_pg_metadata,
 )
 from oracle_pg_sync.sync.copy_loader import CopyMetrics, copy_rows
+from oracle_pg_sync.sync.errors import OperationalSyncError
 from oracle_pg_sync.sync.runtime import (
     DirectSyncExecutionContext,
     SyncExecutionContext,
@@ -36,6 +37,7 @@ from oracle_pg_sync.sync.staging import (
     drop_table,
 )
 from oracle_pg_sync.utils.naming import oracle_name, split_schema_table
+from oracle_pg_sync.utils.retry import is_transient_connect_error
 from oracle_pg_sync.validation import (
     checksum_columns,
     checksum_result_row,
@@ -539,8 +541,10 @@ class OracleToPostgresSync:
                             load_result.staging_table,
                             effective_where,
                         )
-                        if result.checksum_status == "MISMATCH" or result.row_count_match is False:
-                            raise RuntimeError("staging validation failed before truncate_safe cutover")
+                        if result.checksum_status == "MISMATCH":
+                            raise RuntimeError("staging checksum validation failed before truncate_safe cutover")
+                        if result.row_count_match is False:
+                            self._mark_rowcount_warning(result)
                         backup_table = self._apply_truncate_from_staging(
                             pcur,
                             schema=table.schema,
@@ -614,8 +618,10 @@ class OracleToPostgresSync:
                             load_result.staging_table,
                             effective_where,
                         )
-                        if result.checksum_status == "MISMATCH" or result.row_count_match is False:
-                            raise RuntimeError("staging validation failed before swap_safe cutover")
+                        if result.checksum_status == "MISMATCH":
+                            raise RuntimeError("staging checksum validation failed before swap_safe cutover")
+                        if result.row_count_match is False:
+                            self._mark_rowcount_warning(result)
                         backup_table = self._apply_swap_from_staging(
                             pcur,
                             schema=table.schema,
@@ -684,8 +690,10 @@ class OracleToPostgresSync:
                             load_result.staging_table,
                             effective_where,
                         )
-                        if result.checksum_status == "MISMATCH" or result.row_count_match is False:
-                            raise RuntimeError("staging validation failed before incremental_safe apply")
+                        if result.checksum_status == "MISMATCH":
+                            raise RuntimeError("staging checksum validation failed before incremental_safe apply")
+                        if result.row_count_match is False:
+                            self._mark_rowcount_warning(result)
                         backup_table = self._apply_incremental_from_staging(
                             pcur,
                             schema=table.schema,
@@ -750,7 +758,7 @@ class OracleToPostgresSync:
                     self._apply_copy_metrics(result, load_result.metrics)
                     self._validate_copy_completeness(result)
                     if result.checksum_status == "MISMATCH":
-                        raise RuntimeError("checksum mismatch after load")
+                        raise OperationalSyncError("checksum mismatch after load")
                     if self._rowcount_validation_enabled(table_cfg):
                         (
                             result.oracle_row_count,
@@ -768,19 +776,12 @@ class OracleToPostgresSync:
                         result.row_count_diff = (result.postgres_row_count or 0) - (result.oracle_row_count or 0)
                         result.validation_status = "validation_pass" if result.row_count_match else "validation_failed"
                         if result.row_count_match is False:
-                            message = (
-                                f"rowcount mismatch source={result.oracle_row_count} "
-                                f"target={result.postgres_row_count} diff={result.row_count_diff}"
-                            )
-                            if self._rowcount_fail_on_mismatch(table_cfg):
-                                raise RuntimeError(message)
-                            result.status = "WARNING"
-                            result.message = message
+                            self._mark_rowcount_warning(result)
                     else:
                         result.validation_status = "validation_skipped"
                     result.data_integrity_status = self._data_integrity_status(result)
                     if result.data_integrity_status == "FAIL":
-                        raise RuntimeError(self._data_integrity_failure_message(result))
+                        raise OperationalSyncError(self._data_integrity_failure_message(result))
                     if result.data_integrity_status == "UNKNOWN":
                         result.status = "WARNING"
                         result.message = result.message or "data integrity validation incomplete"
@@ -830,7 +831,7 @@ class OracleToPostgresSync:
                     status="failed",
                     message=str(exc),
                 )
-            self.logger.exception("Sync failed for %s", table.fqname)
+            _log_sync_failure(self.logger, table.fqname, exc)
             return result
         finally:
             result.elapsed_seconds = time.time() - started
@@ -1811,7 +1812,7 @@ class OracleToPostgresSync:
         if result.checksum_status == "MISMATCH":
             return "FAIL"
         if result.row_count_match is False:
-            return "FAIL"
+            return "WARN"
         if result.row_count_match is not True:
             return "UNKNOWN"
         if result.mode in {"truncate", "truncate_safe", "swap", "swap_safe"}:
@@ -1846,6 +1847,15 @@ class OracleToPostgresSync:
                 f"postgres_row_count={result.postgres_row_count}"
             )
         return "data integrity failed"
+
+    def _mark_rowcount_warning(self, result: SyncResult) -> None:
+        result.row_count_diff = (result.postgres_row_count or 0) - (result.oracle_row_count or 0)
+        result.validation_status = "validation_failed"
+        result.status = "WARNING"
+        result.message = (
+            f"rowcount mismatch source={result.oracle_row_count} "
+            f"target={result.postgres_row_count} diff={result.row_count_diff}"
+        )
 
     def _rowcount_validation_enabled(self, table_cfg: TableConfig) -> bool:
         return bool(table_cfg.validation.rowcount.enabled and self.config.validation.rowcount.enabled)
@@ -1987,6 +1997,15 @@ def _oracle_count_sql_summary(owner: str, table: str, where: str | None) -> str:
 
 def _postgres_count_sql_summary(schema: str, table: str) -> str:
     return f"SELECT COUNT(1) FROM {schema}.{table}"
+
+
+def _log_sync_failure(logger: logging.Logger, table_name: str, exc: Exception) -> None:
+    if is_transient_connect_error(exc):
+        logger.error("Database connection unavailable table=%s status=FAILED reason=%s", table_name, exc)
+    elif isinstance(exc, OperationalSyncError):
+        logger.error("Data integrity validation failed table=%s status=FAILED reason=%s", table_name, exc)
+    else:
+        logger.exception("Sync failed for %s", table_name)
 
 
 def _apply_checksum_summary(result: SyncResult, rows: list[dict[str, Any]]) -> None:

@@ -203,7 +203,7 @@ The tool now also treats missing `ORACLE_DSN` as empty when `ORACLE_HOST` is use
 
 ### Rowcount Mismatch
 
-A sync cannot report `SUCCESS` when rowcounts differ.
+A sync with different rowcounts is committed as `WARNING` and reports `row_count_diff`.
 
 Check:
 

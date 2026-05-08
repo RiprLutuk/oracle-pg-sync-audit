@@ -23,7 +23,8 @@ if "oracledb" not in sys.modules:
     sys.modules["oracledb"] = oracledb_stub
 
 from oracle_pg_sync.config import AppConfig, OracleConfig, PostgresConfig, SyncConfig, TableConfig
-from oracle_pg_sync.sync.oracle_to_postgres import OracleToPostgresSync, SyncResult
+from oracle_pg_sync.sync.errors import OperationalSyncError
+from oracle_pg_sync.sync.oracle_to_postgres import OracleToPostgresSync, SyncResult, _log_sync_failure
 from oracle_pg_sync.sync.runtime import SyncExecutionContext
 
 
@@ -112,7 +113,7 @@ class OracleToPostgresSyncTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             sync._validate_copy_completeness(result)
 
-    def test_data_integrity_requires_copy_and_rowcount_match(self):
+    def test_data_integrity_warns_on_rowcount_mismatch(self):
         sync = OracleToPostgresSync(AppConfig(oracle=OracleConfig(schema="APP"), postgres=PostgresConfig(schema="public")))
         result = SyncResult("public.sample", "truncate", "PENDING")
         result.rows_read_from_oracle = 3
@@ -126,7 +127,7 @@ class OracleToPostgresSyncTest(unittest.TestCase):
 
         result.postgres_row_count = 2
         result.row_count_match = False
-        self.assertEqual(sync._data_integrity_status(result), "FAIL")
+        self.assertEqual(sync._data_integrity_status(result), "WARN")
 
     def test_data_integrity_unknown_when_rowcount_skipped(self):
         sync = OracleToPostgresSync(AppConfig(oracle=OracleConfig(schema="APP"), postgres=PostgresConfig(schema="public")))
@@ -135,6 +136,17 @@ class OracleToPostgresSyncTest(unittest.TestCase):
         result.rows_written_to_postgres = 3
 
         self.assertEqual(sync._data_integrity_status(result), "UNKNOWN")
+
+    def test_operational_validation_failure_logs_without_traceback_wording(self):
+        logger = logging.getLogger("test_operational_validation_failure_logs_without_traceback_wording")
+
+        with self.assertLogs(logger, level="ERROR") as capture:
+            _log_sync_failure(logger, "public.sample", OperationalSyncError("rowcount mismatch source=3 target=2 diff=-1"))
+
+        text = "\n".join(capture.output)
+        self.assertIn("Data integrity validation failed table=public.sample status=FAILED", text)
+        self.assertNotIn("Traceback", text)
+        self.assertNotIn("Sync failed for public.sample", text)
 
     def test_skip_if_rowcount_match_precheck_requires_explicit_flag_and_full_refresh_shape(self):
         sync = OracleToPostgresSync(

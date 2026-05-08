@@ -39,3 +39,4 @@ sqlnet.ora
 vendor/oracle/*.zip
 vendor/oracle/META-INF/
 vendor/oracle/instantclient_*/
+queries/

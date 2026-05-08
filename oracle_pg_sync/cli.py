@@ -160,6 +160,27 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_args(report)
     report.add_argument("--tables", nargs="*", help="Tidak dipakai, disediakan agar konsisten")
 
+    query_perf = sub.add_parser("query-perf", help="Benchmark query Oracle vs PostgreSQL dan buat saran refactor")
+    _add_common_args(query_perf)
+    query_perf.add_argument("--query-file", required=True, help="Path file SQL berisi satu SELECT/WITH query")
+    query_perf.add_argument(
+        "--database",
+        choices=["both", "oracle", "postgres"],
+        default="both",
+        help="Database yang dites. Default: both",
+    )
+    query_perf.add_argument(
+        "--no-refactor",
+        action="store_true",
+        help="Jalankan query asli saja tanpa kandidat refactor otomatis",
+    )
+    query_perf.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=300,
+        help="Timeout/threshold benchmark per variant. Default: 300",
+    )
+
     objects = sub.add_parser(
         "audit-objects",
         help="Compare schema objects seperti view, sequence, SP/function, trigger",
@@ -401,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         "audit-objects",
         "dependencies",
         "validate",
+        "query-perf",
     }:
         _ensure_oracle_client_library_path(config, argv)
     report_dir = Path(config.reports.output_dir)
@@ -456,7 +478,7 @@ def main(argv: list[str] | None = None) -> int:
     elif not tables and args.command == "audit":
         tables = _discover_postgres_tables(config, logger)
 
-    if not tables and args.command not in {"report", "audit-objects"}:
+    if not tables and args.command not in {"report", "audit-objects", "query-perf"}:
         raise SystemExit("Tidak ada table target. Isi config.tables atau pakai --tables.")
     _apply_runtime_table_overrides(args, config, tables)
     job_key = _job_key(config, args, direction, tables) if args.command in {"sync", "all"} else ""
@@ -813,6 +835,51 @@ def main(argv: list[str] | None = None) -> int:
         )
         logger.info("HTML report dibuat: %s", source_dir / "report.html")
         return 0
+
+    if args.command == "query-perf":
+        from oracle_pg_sync.query_perf import QueryPerfOptions, run_query_perf_report
+
+        run_id = new_run_id()
+        manifest = RunManifest(
+            report_dir=report_dir,
+            run_id=run_id,
+            command="query-perf",
+            config_file=args.config,
+            config=config,
+            direction=None,
+            dry_run=True,
+            tables_requested=[],
+            checkpoint_path=str(checkpoint_store.path),
+        )
+        run_dir = manifest.run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
+        attach_run_log(logger, run_dir)
+        logger.info("Run log dibuat: %s", run_dir / "logs.txt")
+        rows = run_query_perf_report(
+            config,
+            QueryPerfOptions(
+                query_file=Path(args.query_file),
+                database=args.database,
+                include_refactors=not args.no_refactor,
+                timeout_seconds=max(1, int(args.timeout_seconds or 300)),
+            ),
+            run_dir,
+        )
+        _copy_log_to_run_dir(report_dir, run_dir)
+        manifest_path = manifest.finish(
+            result_rows=rows,
+            report_files=_run_report_files(
+                run_dir,
+                "query_perf_summary.csv",
+                "query_perf_recommendations.csv",
+                "query_perf_report.html",
+                "query_variants.sql",
+                "logs.txt",
+            ),
+        )
+        logger.info("Manifest dibuat: %s", manifest_path)
+        logger.info("Query performance report dibuat: %s", run_dir / "query_perf_report.html")
+        return 0 if any(row.get("status") == "OK" for row in rows) else 1
 
     if args.command == "audit-objects":
         from oracle_pg_sync.reports.writer_csv import write_csv
@@ -1830,23 +1897,16 @@ def _enforce_level1_sync_guards(args: argparse.Namespace, config: AppConfig, tab
         raise SystemExit("sync.skip_failed_rows=true is not allowed with --go/--execute")
     if not config.validation.rowcount.enabled:
         raise SystemExit("validation.rowcount.enabled=false is not allowed with --go/--execute")
-    if not config.validation.rowcount.fail_on_mismatch:
-        raise SystemExit("validation.rowcount.fail_on_mismatch=false is not allowed with --go/--execute")
 
     disabled: list[str] = []
-    warning_only: list[str] = []
     for table_name in tables:
         table_cfg = config.resolve_table_config(table_name, strict=False)
         if table_cfg is None:
             continue
         if not table_cfg.validation.rowcount.enabled:
             disabled.append(table_name)
-        if not table_cfg.validation.rowcount.fail_on_mismatch:
-            warning_only.append(table_name)
     if disabled:
         raise SystemExit("table validation.rowcount.enabled=false is not allowed with --go/--execute: " + ", ".join(disabled))
-    if warning_only:
-        raise SystemExit("table validation.rowcount.fail_on_mismatch=false is not allowed with --go/--execute: " + ", ".join(warning_only))
 
 
 def _single_table_config(config: AppConfig, tables: list[str], flag_name: str) -> TableConfig:

@@ -14,6 +14,7 @@ from oracle_pg_sync.metadata.compare import compare_table_metadata, inventory_ha
 from oracle_pg_sync.metadata.oracle_metadata import fetch_table_metadata as fetch_oracle_metadata
 from oracle_pg_sync.metadata.postgres_metadata import fetch_table_metadata as fetch_pg_metadata
 from oracle_pg_sync.sync.runtime import DirectSyncExecutionContext, SyncExecutionContext, create_sync_execution_context
+from oracle_pg_sync.utils.retry import is_transient_connect_error
 from oracle_pg_sync.utils.naming import split_schema_table
 from oracle_pg_sync.validation import checksum_columns, checksum_result_row, stable_cursor_hash
 
@@ -430,7 +431,14 @@ class PostgresToOracleSync:
             result.status = "FAILED"
             result.message = str(exc)
             result.data_integrity_status = "FAIL"
-            self.logger.exception("Reverse sync failed for %s", table.fqname)
+            if is_transient_connect_error(exc):
+                self.logger.error(
+                    "Reverse sync failed for %s due to transient database connection error: %s",
+                    table.fqname,
+                    exc,
+                )
+            else:
+                self.logger.exception("Reverse sync failed for %s", table.fqname)
             return result
         finally:
             result.elapsed_seconds = time.time() - started

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import time
 from collections.abc import Callable
 from typing import TypeVar
@@ -54,8 +55,10 @@ def connect_retry(
     should_retry: Callable[[Exception], bool] | None = None,
     logger: logging.Logger | None = None,
 ) -> T:
-    retry_attempts = attempts if attempts is not None else _env_int("ORACLE_PG_SYNC_CONNECT_RETRIES", 4)
+    retry_attempts = attempts if attempts is not None else _env_int("ORACLE_PG_SYNC_CONNECT_RETRIES", 8)
     retry_delay = delay_seconds if delay_seconds is not None else _env_float("ORACLE_PG_SYNC_CONNECT_RETRY_DELAY_SECONDS", 1.0)
+    retry_max_delay = _env_float("ORACLE_PG_SYNC_CONNECT_RETRY_MAX_DELAY_SECONDS", 30.0)
+    retry_jitter = max(0.0, _env_float("ORACLE_PG_SYNC_CONNECT_RETRY_JITTER_SECONDS", 0.0))
     active_logger = logger or logging.getLogger(__name__)
     last_error: Exception | None = None
     for attempt in range(1, max(1, retry_attempts) + 1):
@@ -66,7 +69,9 @@ def connect_retry(
             predicate = should_retry or is_transient_connect_error
             if attempt >= retry_attempts or not predicate(exc):
                 raise
-            delay = retry_delay * (2 ** (attempt - 1))
+            delay = min(retry_max_delay, retry_delay * (2 ** (attempt - 1)))
+            if retry_jitter:
+                delay += random.uniform(0, retry_jitter)
             active_logger.warning("%s failed attempt=%s retry_in=%.1fs error=%s", label, attempt, delay, exc)
             time.sleep(delay)
     raise RuntimeError(f"{label} retry exhausted") from last_error

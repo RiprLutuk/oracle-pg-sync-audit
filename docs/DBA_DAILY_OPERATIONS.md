@@ -40,6 +40,8 @@ di-install editable atau shell sudah berada di root project.
 | Reset semua circuit breaker | `ops circuit-breaker reset --all --config config.yaml` |
 | Rollback run safe mode | `ops rollback RUN_ID --config config.yaml` |
 | Repair dependency | `ops dependencies repair --config config.yaml` |
+| Cron keep-up Oracle -> PostgreSQL | `jobs/production_keepup.sh oracle_to_pg` |
+| Final cutoff Oracle -> PostgreSQL | `FREEZE_CONFIRMED=yes jobs/production_cutoff.sh oracle_to_pg` |
 
 ## Workflow Standar Sebelum Execute
 
@@ -78,6 +80,38 @@ ops sync \
   --mode truncate_safe \
   --lob stream \
   --go
+```
+
+## Cron Production Oracle -> PostgreSQL
+
+Gunakan wrapper production untuk menjaga PostgreSQL tetap dekat dengan Oracle
+menjelang cutoff:
+
+```bash
+cd /home/lutuk/project/pg2ora2pg/oracle-pg-sync-audit
+TIMEOUT_SECONDS=21600 RETRY=1 jobs/production_keepup.sh oracle_to_pg
+```
+
+Default table scope dibaca dari `config.yaml` dan `configs/tables.yaml`.
+Untuk menjalankan subset table:
+
+```bash
+TABLES="public.a_hp_batch public.a_hp_batch_detail" jobs/production_keepup.sh oracle_to_pg
+```
+
+Contoh crontab ada di `jobs/crontab.production.example`:
+
+```bash
+crontab -e
+# paste isi jobs/crontab.production.example
+crontab -l
+```
+
+Final cutoff jangan dijadwalkan rutin. Jalankan manual hanya setelah Oracle
+write dibekukan:
+
+```bash
+FREEZE_CONFIRMED=yes TIMEOUT_SECONDS=21600 RETRY=1 jobs/production_cutoff.sh oracle_to_pg
 ```
 
 ## PostgreSQL -> Oracle Operations
@@ -568,6 +602,7 @@ Gunakan matrix ini sebelum memilih `--mode`.
 | Kondisi | Mode direkomendasikan | Kenapa |
 | --- | --- | --- |
 | Full refresh production Oracle -> PostgreSQL | `truncate_safe` | Load ke staging/backup-aware, validasi sebelum dianggap sukses, rollback tersedia |
+| Full refresh, count source/target sudah sama | `truncate_safe` + `--skip-if-rowcount-match` | Precheck rowcount lalu skip load table yang sudah match |
 | Full refresh kecil non-critical | `truncate` | Lebih sederhana dan cepat, tapi destructive langsung |
 | Table besar, dependency banyak, storage cukup | `truncate_safe` | Lebih aman untuk data integrity |
 | Perlu minim downtime table read | `swap_safe` | Bisa cutover cepat setelah staging siap, tapi butuh storage lebih |
@@ -577,6 +612,7 @@ Gunakan matrix ini sebelum memilih `--mode`.
 | Reverse PostgreSQL -> Oracle per 5 menit | `upsert` | Tidak truncate Oracle, update berdasarkan key |
 | Reverse full replace ke Oracle | `truncate` atau `delete` | Hanya jika window aman dan owner setuju |
 | Tidak ada key yang valid | Jangan pakai `upsert` | Upsert butuh key yang benar |
+| Data non-LOB harus masuk, LOB boleh kosong | mode sesuai kebutuhan + `--lob null` | Kolom biasa tetap load, BLOB/CLOB ditulis `NULL` |
 | Ada LOB yang harus dipakai app | mode sesuai kebutuhan + `--lob stream` | BLOB jadi `bytea`, CLOB jadi `text` |
 | Audit schema masih ERROR | Jangan execute kecuali `--force` dengan approval | Struktur target belum aman |
 
