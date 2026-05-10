@@ -210,6 +210,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path output CSV. Default: reports/table_object_dependencies.csv",
     )
 
+    sequences = sub.add_parser("sync-sequences", help="Set PostgreSQL sequences from Oracle sequence metadata")
+    _add_common_args(sequences)
+    sequences.add_argument("--tables", nargs="*", help="Override table list")
+    sequences.add_argument("--tables-file", help="Read table list from YAML/JSON file")
+    sequences.add_argument("--limit", type=int, help="Limit table count after table selection")
+    sequences.add_argument(
+        "--all-postgres-tables",
+        action="store_true",
+        help="Scan all tables from the PostgreSQL target schema instead of configured table list",
+    )
+    sequences.add_argument(
+        "--buffer",
+        "--sequence-buffer",
+        dest="sequence_buffer",
+        type=int,
+        default=0,
+        help="Set PostgreSQL nextval at least this many values ahead of Oracle last_number",
+    )
+    sequences.add_argument("--go", "--execute", dest="execute", action="store_true", help="Apply setval changes")
+
     all_cmd = sub.add_parser("all", help="Audit, sync, audit ulang, lalu report")
     _add_common_args(all_cmd)
     all_cmd.add_argument("--tables", nargs="*", help="Override table list")
@@ -385,12 +405,42 @@ def _add_production_sync_args(parser: argparse.ArgumentParser) -> None:
         default=10 * 1024 * 1024,
         help="Rotate reports/sync.log above this size",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Rows per fetch/executemany batch for this run",
+    )
+    parser.add_argument(
+        "--postgres-to-oracle-upsert-strategy",
+        choices=["array_merge", "staging_merge"],
+        default=argparse.SUPPRESS,
+        help="Reverse upsert implementation. staging_merge loads batches into an Oracle GTT then runs one MERGE.",
+    )
+    parser.add_argument(
+        "--require-incremental-filter",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Fail incremental sync instead of falling back to a no-WHERE full scan when no watermark/initial value exists.",
+    )
+    parser.add_argument(
+        "--require-source-incremental-index",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Fail PostgreSQL-to-Oracle incremental sync unless the PostgreSQL incremental filter has an index.",
+    )
+    parser.add_argument(
+        "--require-target-key-index",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Fail PostgreSQL-to-Oracle upsert unless Oracle has a unique index/constraint on the key columns.",
+    )
 
 
 def _add_incremental_override_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--incremental-column",
-        help="Enable incremental override using this source column",
+        help="Enable incremental override using this source column; omit with --incremental to auto-detect update/create timestamp columns",
     )
     parser.add_argument(
         "--incremental-strategy",
@@ -423,6 +473,7 @@ def main(argv: list[str] | None = None) -> int:
         "dependencies",
         "validate",
         "query-perf",
+        "sync-sequences",
     }:
         _ensure_oracle_client_library_path(config, argv)
     report_dir = Path(config.reports.output_dir)
@@ -433,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
     logger = setup_logging(report_dir, logging.DEBUG if args.verbose else logging.INFO)
     _log_resolved_db_config(logger, config)
     _maybe_acquire_lock(args, logger)
-    direction = _resolve_direction(config, getattr(args, "direction", None)) if args.command in {"sync", "all", "validate"} else None
+    direction = _resolve_direction(config, getattr(args, "direction", None)) if args.command in {"sync", "all", "validate", "sync-sequences"} else None
     checkpoint_store = CheckpointStore(config.sync.checkpoint_dir)
 
     if getattr(args, "no_rowcount_validation", False):
@@ -473,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _apply_lob_override(config, getattr(args, "lob", None))
     _apply_sync_runtime_overrides(args, config)
-    if args.command == "audit" and args.all_postgres_tables:
+    if args.command in {"audit", "sync-sequences"} and getattr(args, "all_postgres_tables", False):
         tables = _apply_limit(_discover_postgres_tables(config, logger), getattr(args, "limit", None))
     elif not tables and args.command == "audit":
         tables = _discover_postgres_tables(config, logger)
@@ -640,6 +691,49 @@ def main(argv: list[str] | None = None) -> int:
             )
             logger.info("Manifest dibuat: %s", manifest_path)
             raise
+
+    if args.command == "sync-sequences":
+        from oracle_pg_sync.reports.writer_csv import write_csv
+        from oracle_pg_sync.reports.sequence_html import write_sequence_html_report
+        from oracle_pg_sync.sequence_sync import sync_postgres_sequences_from_oracle
+
+        if direction and direction != "oracle-to-postgres":
+            raise SystemExit("sync-sequences only supports oracle-to-postgres")
+        sequence_buffer = int(getattr(args, "sequence_buffer", 0) or 0)
+        if sequence_buffer < 0:
+            raise SystemExit("--buffer must be >= 0")
+        run_id = new_run_id()
+        manifest = RunManifest(
+            report_dir=report_dir,
+            run_id=run_id,
+            command="sync-sequences",
+            config_file=args.config,
+            config=config,
+            direction="oracle-to-postgres",
+            dry_run=not args.execute,
+            tables_requested=tables,
+            checkpoint_path=str(checkpoint_store.path),
+        )
+        run_dir = manifest.run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
+        attach_run_log(logger, run_dir)
+        logger.info("Run log dibuat: %s", run_dir / "logs.txt")
+        rows = sync_postgres_sequences_from_oracle(
+            config,
+            tables,
+            logger,
+            execute=bool(args.execute),
+            sequence_buffer=sequence_buffer,
+        )
+        write_csv(run_dir / "sequence_sync.csv", rows)
+        write_sequence_html_report(run_dir / "sequence_report.html", rows)
+        _copy_log_to_run_dir(report_dir, run_dir)
+        manifest_path = manifest.finish(
+            result_rows=rows,
+            report_files=_run_report_files(run_dir, "sequence_sync.csv", "sequence_report.html", "logs.txt"),
+        )
+        logger.info("Manifest dibuat: %s", manifest_path)
+        return 1 if any(row.get("status") == "ERROR" for row in rows) else 0
 
     if args.command == "sync":
         from oracle_pg_sync.reports.writer_csv import write_csv
@@ -1851,7 +1945,20 @@ def _apply_runtime_table_overrides(args: argparse.Namespace, config: AppConfig, 
     _apply_where_override(config, tables, getattr(args, "where", None))
     key_columns = getattr(args, "key_columns", None)
     incremental_column = getattr(args, "incremental_column", None)
+    incremental_requested = bool(
+        getattr(args, "incremental", False)
+        or incremental_column
+        or getattr(args, "initial_value", None) is not None
+        or getattr(args, "overlap_minutes", None) is not None
+        or getattr(args, "incremental_strategy", None) is not None
+    )
+    if not key_columns and not incremental_requested:
+        return
     if not key_columns and not incremental_column:
+        for table_name in tables:
+            table_cfg = config.table_config(table_name)
+            if table_cfg:
+                _apply_incremental_runtime_options(args, table_cfg, incremental_column=None)
         return
     table_cfg = _single_table_config(
         config,
@@ -1860,17 +1967,30 @@ def _apply_runtime_table_overrides(args: argparse.Namespace, config: AppConfig, 
     )
     if key_columns:
         table_cfg.key_columns = [str(column).lower() for column in key_columns]
+    if incremental_requested:
+        _apply_incremental_runtime_options(args, table_cfg, incremental_column=incremental_column)
+
+
+def _apply_incremental_runtime_options(
+    args: argparse.Namespace,
+    table_cfg: TableConfig,
+    *,
+    incremental_column: str | None,
+) -> None:
+    table_cfg.incremental.enabled = True
     if incremental_column:
-        table_cfg.incremental.enabled = True
         table_cfg.incremental.column = str(incremental_column).lower()
+    if getattr(args, "incremental_strategy", None) is not None:
         table_cfg.incremental.strategy = getattr(args, "incremental_strategy", "updated_at")
-        if getattr(args, "initial_value", None) is not None:
-            table_cfg.incremental.initial_value = args.initial_value
-        if getattr(args, "overlap_minutes", None) is not None:
-            table_cfg.incremental.overlap_minutes = int(args.overlap_minutes)
+    if getattr(args, "initial_value", None) is not None:
+        table_cfg.incremental.initial_value = args.initial_value
+    if getattr(args, "overlap_minutes", None) is not None:
+        table_cfg.incremental.overlap_minutes = int(args.overlap_minutes)
 
 
 def _apply_sync_runtime_overrides(args: argparse.Namespace, config: AppConfig) -> None:
+    if hasattr(args, "batch_size"):
+        config.sync.batch_size = max(1, int(args.batch_size))
     if hasattr(args, "workers"):
         config.sync.workers = max(1, int(args.workers))
         config.sync.parallel_workers = config.sync.workers
@@ -1884,6 +2004,14 @@ def _apply_sync_runtime_overrides(args: argparse.Namespace, config: AppConfig) -
         config.sync.respect_dependencies = bool(args.respect_dependencies)
     if hasattr(args, "skip_if_rowcount_match"):
         config.sync.skip_if_rowcount_match = bool(args.skip_if_rowcount_match)
+    if hasattr(args, "postgres_to_oracle_upsert_strategy"):
+        config.sync.postgres_to_oracle_upsert_strategy = str(args.postgres_to_oracle_upsert_strategy)
+    if hasattr(args, "require_incremental_filter"):
+        config.sync.require_incremental_filter = bool(args.require_incremental_filter)
+    if hasattr(args, "require_source_incremental_index"):
+        config.sync.require_source_incremental_index = bool(args.require_source_incremental_index)
+    if hasattr(args, "require_target_key_index"):
+        config.sync.require_target_key_index = bool(args.require_target_key_index)
 
 
 def _audit_workers(args: argparse.Namespace, config: AppConfig) -> int:

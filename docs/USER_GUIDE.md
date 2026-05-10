@@ -282,7 +282,6 @@ ops sync \
   --tables public.sample_customer \
   --mode upsert \
   --key-columns customer_id \
-  --incremental-column updated_at \
   --incremental \
   --go
 ```
@@ -531,7 +530,7 @@ Examples:
 
 ```bash
 ./jobs/daily.sh oracle_to_pg
-./jobs/incremental.sh pg_to_oracle --tables public.sample_customer --mode upsert --key-columns customer_id --incremental-column updated_at
+./jobs/incremental.sh pg_to_oracle --tables public.sample_customer --mode upsert --key-columns customer_id --incremental
 ```
 
 Per-minute local reverse wrapper example:

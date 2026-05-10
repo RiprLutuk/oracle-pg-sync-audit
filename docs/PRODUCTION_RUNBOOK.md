@@ -100,7 +100,6 @@ ops sync \
   --tables public.sample_customer \
   --mode upsert \
   --key-columns customer_id \
-  --incremental-column updated_at \
   --incremental
 ```
 
@@ -113,7 +112,6 @@ ops sync \
   --tables public.sample_customer \
   --mode upsert \
   --key-columns customer_id \
-  --incremental-column updated_at \
   --incremental \
   --go
 ```
@@ -157,8 +155,9 @@ jobs/production_keepup.sh oracle_to_pg
 ```
 
 This wrapper reads the default table list from `config.yaml` /
-`configs/tables.yaml`, runs an execute sync, then runs exact rowcount
-validation. To sync only a subset, pass `TABLES`:
+`configs/tables.yaml`, runs an execute sync, sets PostgreSQL sequences from
+Oracle sequence metadata, then runs exact rowcount validation. To sync only a
+subset, pass `TABLES`:
 
 ```bash
 TABLES="public.a_hp_batch public.a_hp_batch_detail" jobs/production_keepup.sh oracle_to_pg
@@ -177,6 +176,12 @@ Cutoff is intentionally manual. Run it only after Oracle writes are frozen:
 FREEZE_CONFIRMED=yes TIMEOUT_SECONDS=21600 jobs/production_cutoff.sh oracle_to_pg
 ```
 
+Manual sequence-only repair is also available:
+
+```bash
+ops sync-sequences --config config.yaml --go
+```
+
 Full refresh:
 
 ```bash
@@ -188,7 +193,7 @@ Incremental:
 
 ```bash
 jobs/incremental.sh oracle_to_pg
-jobs/incremental.sh pg_to_oracle --tables public.sample_customer --mode upsert --key-columns customer_id --incremental-column updated_at
+jobs/incremental.sh pg_to_oracle --tables public.sample_customer --mode upsert --key-columns customer_id --incremental
 ```
 
 Job wrapper guarantees:

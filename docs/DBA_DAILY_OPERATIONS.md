@@ -29,6 +29,7 @@ di-install editable atau shell sudah berada di root project.
 | Dry-run sync | `ops sync --config config.yaml --tables public.table_name --mode truncate_safe` |
 | Simulasi risiko | `ops sync --config config.yaml --tables public.table_name --mode truncate_safe --simulate` |
 | Execute sync | `ops sync --config config.yaml --tables public.table_name --mode truncate_safe --go` |
+| Sync PostgreSQL sequence dari Oracle | `ops sync-sequences --config config.yaml --tables public.table_name --go` |
 | Validasi rowcount setelah sync | `ops validate --config config.yaml --tables public.table_name` |
 | Compare missing/extra key | `ops validate missing-keys --config config.yaml --tables public.table_name` |
 | Lihat run terakhir | `ops status --config config.yaml` |
@@ -93,6 +94,8 @@ TIMEOUT_SECONDS=21600 RETRY=1 jobs/production_keepup.sh oracle_to_pg
 ```
 
 Default table scope dibaca dari `config.yaml` dan `configs/tables.yaml`.
+Wrapper production menjalankan tiga langkah berurutan: sync data, set
+PostgreSQL sequence dari metadata sequence Oracle, lalu validasi rowcount.
 Untuk menjalankan subset table:
 
 ```bash
@@ -143,7 +146,6 @@ ops sync \
   --tables public.sample_customer \
   --mode upsert \
   --key-columns customer_id \
-  --incremental-column updated_at \
   --incremental
 ```
 
@@ -156,7 +158,6 @@ ops sync \
   --tables public.sample_customer \
   --mode upsert \
   --key-columns customer_id \
-  --incremental-column updated_at \
   --incremental \
   --go
 ```
@@ -200,7 +201,6 @@ CONFIG_PATH=/path/to/config.yaml jobs/incremental.sh pg_to_oracle \
   --tables public.sample_customer \
   --mode upsert \
   --key-columns customer_id \
-  --incremental-column updated_at \
   --incremental
 ```
 
@@ -713,7 +713,6 @@ ops sync \
   --tables public.sample_customer \
   --mode upsert \
   --key-columns customer_id \
-  --incremental-column updated_at \
   --incremental \
   --go
 ```
@@ -775,7 +774,7 @@ Sebelum pasang cron:
 ```bash
 ops doctor --config config.yaml
 ops sync --config config.yaml --profile daily --direction oracle-to-postgres
-ops sync --config config.yaml --profile every_5min --direction postgres-to-oracle --mode upsert --tables public.sample_customer --key-columns customer_id --incremental-column updated_at --incremental
+ops sync --config config.yaml --profile every_5min --direction postgres-to-oracle --mode upsert --tables public.sample_customer --key-columns customer_id --incremental
 ```
 
 Pastikan:
@@ -792,7 +791,7 @@ Contoh run manual wrapper:
 
 ```bash
 CONFIG_PATH=/path/to/config.yaml RETRY=3 TIMEOUT_SECONDS=7200 jobs/daily.sh oracle_to_pg
-CONFIG_PATH=/path/to/config.yaml RETRY=3 TIMEOUT_SECONDS=900 jobs/incremental.sh pg_to_oracle --tables public.sample_customer --mode upsert --key-columns customer_id --incremental-column updated_at --incremental
+CONFIG_PATH=/path/to/config.yaml RETRY=3 TIMEOUT_SECONDS=900 jobs/incremental.sh pg_to_oracle --tables public.sample_customer --mode upsert --key-columns customer_id --incremental
 ```
 
 Ingat: wrapper job menambahkan `--go`, jadi itu execute sungguhan.
@@ -803,6 +802,9 @@ Untuk table operasional kecil/menengah yang harus reverse sync cepat, gunakan
 wrapper lokal `jobs/pg_to_oracle_every_1min.sh`. File ini sengaja masuk
 `.gitignore` karena isinya biasanya spesifik environment: daftar table,
 unique key, jumlah worker, timeout, dan pilihan dry-run.
+Di `TABLE_SPECS`, isi field ketiga dengan `auto` agar job mendeteksi kolom
+timestamp update/create otomatis; jika keduanya ada, filter memakai
+`COALESCE(update_col, create_col)`.
 
 Dry-run manual dulu:
 

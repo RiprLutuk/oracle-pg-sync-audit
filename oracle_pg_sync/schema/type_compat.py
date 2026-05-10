@@ -151,6 +151,13 @@ def _assess_number(oracle: Any, postgres: Any, pdt: str) -> CompatibilityAssessm
     scale = getattr(oracle, "numeric_scale", None)
     if any(token in pdt for token in ("NUMERIC", "DECIMAL")):
         pg_precision, pg_scale = _extract_precision_scale(pdt)
+        if precision is None and pg_scale == 0:
+            return CompatibilityAssessment(
+                COMPATIBLE_WITH_WARNING,
+                SEVERITY_WARNING,
+                "Oracle NUMBER without fixed precision/scale may contain decimals, but PostgreSQL numeric scale 0 rounds fractional values.",
+                "Use PostgreSQL numeric without scale unless the source column is proven integer-only.",
+            )
         if pg_precision is not None and precision is not None and pg_precision < precision:
             return CompatibilityAssessment(
                 INCOMPATIBLE,
@@ -178,10 +185,10 @@ def _assess_number(oracle: Any, postgres: Any, pdt: str) -> CompatibilityAssessm
             )
         if precision is None:
             return CompatibilityAssessment(
-                COMPATIBLE_WITH_WARNING,
-                SEVERITY_WARNING,
-                "Oracle NUMBER without precision may overflow PostgreSQL integer storage.",
-                "Prefer PostgreSQL numeric when Oracle precision is unspecified.",
+                COMPATIBLE,
+                SEVERITY_OK,
+                "Oracle NUMBER without precision is integer-compatible with PostgreSQL integer storage.",
+                "No action required when profiled source values are integer-only and within range.",
             )
         integer_limits = {
             "SMALLINT": 4,
@@ -192,7 +199,9 @@ def _assess_number(oracle: Any, postgres: Any, pdt: str) -> CompatibilityAssessm
             "BIGINT": 18,
             "INT8": 18,
         }
-        pg_limit = next((limit for token, limit in integer_limits.items() if token in pdt or pdt == token), None)
+        pg_limit = integer_limits.get(pdt)
+        if pg_limit is None:
+            pg_limit = next((limit for token, limit in integer_limits.items() if token in pdt), None)
         if pg_limit is not None and precision > pg_limit:
             return CompatibilityAssessment(
                 INCOMPATIBLE,

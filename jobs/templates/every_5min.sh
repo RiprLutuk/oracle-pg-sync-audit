@@ -19,4 +19,4 @@ CONFIG_PATH="$CONFIG_PATH" \
   --tables public.sample_customer \
   --mode upsert \
   --key-columns customer_id \
-  --incremental-column updated_at
+  --incremental

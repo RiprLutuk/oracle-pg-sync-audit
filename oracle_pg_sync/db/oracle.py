@@ -135,6 +135,11 @@ def _sql_table_name(cur, owner: str, table: str) -> str:
     return resolve_table_name(cur, owner, table) or oracle_name(table)
 
 
+def _stage_table_name(table: str) -> str:
+    cleaned = re.sub(r"[^A-Z0-9_]", "_", oracle_name(table))
+    return f"OGS_{cleaned[:22]}"
+
+
 def table_exists(cur, owner: str, table: str) -> bool:
     return resolve_table_name(cur, owner, table) is not None
 
@@ -236,6 +241,46 @@ def preferred_key_columns(cur, owner: str, table: str) -> list[str]:
     if not rows:
         return []
     return [str(row[0]) for row in rows]
+
+
+def has_index_on_columns(
+    cur,
+    owner: str,
+    table: str,
+    columns: list[str] | tuple[str, ...],
+    *,
+    unique: bool = False,
+) -> bool:
+    table_name = resolve_table_name(cur, owner, table)
+    if not table_name:
+        return False
+    wanted = [oracle_name(column) for column in columns if column]
+    if not wanted:
+        return False
+    cur.execute(
+        """
+        SELECT ai.INDEX_NAME, ai.UNIQUENESS, aic.COLUMN_NAME, aic.COLUMN_POSITION
+        FROM ALL_INDEXES ai
+        JOIN ALL_IND_COLUMNS aic
+          ON aic.INDEX_OWNER = ai.OWNER
+         AND aic.INDEX_NAME = ai.INDEX_NAME
+        WHERE ai.TABLE_OWNER = :owner
+          AND ai.TABLE_NAME = :tbl
+          AND ai.STATUS = 'VALID'
+        ORDER BY ai.INDEX_NAME, aic.COLUMN_POSITION
+        """,
+        {"owner": owner.upper(), "tbl": table_name},
+    )
+    indexes: dict[str, dict[str, Any]] = {}
+    for index_name, uniqueness, column_name, _position in cur.fetchall():
+        item = indexes.setdefault(str(index_name), {"unique": uniqueness == "UNIQUE", "columns": []})
+        item["columns"].append(str(column_name).upper())
+    for item in indexes.values():
+        if unique and not item["unique"]:
+            continue
+        if item["columns"][: len(wanted)] == wanted:
+            return True
+    return False
 
 
 def get_columns(cur, owner: str, table: str) -> list[dict[str, Any]]:
@@ -775,6 +820,81 @@ def insert_rows(
         rows,
     )
     return len(rows)
+
+
+def prepare_global_temporary_stage(
+    cur,
+    *,
+    owner: str,
+    target_table: str,
+    oracle_columns: list[str],
+    stage_table: str | None = None,
+) -> str:
+    stage_table = stage_table or _stage_table_name(target_table)
+    owner_sql = qident(owner.upper())
+    stage_sql = qident(oracle_name(stage_table))
+    cur.execute(
+        """
+        SELECT COUNT(1)
+        FROM ALL_TABLES
+        WHERE OWNER = :owner AND TABLE_NAME = :tbl
+        """,
+        {"owner": owner.upper(), "tbl": oracle_name(stage_table)},
+    )
+    exists = int(cur.fetchone()[0] or 0) > 0
+    if exists:
+        cur.execute(f"TRUNCATE TABLE {owner_sql}.{stage_sql}")
+        return oracle_name(stage_table)
+    select_cols = ", ".join(qident(col.upper()) for col in oracle_columns)
+    target_sql = f"{owner_sql}.{qident(_sql_table_name(cur, owner, target_table))}"
+    cur.execute(
+        f"""
+        CREATE GLOBAL TEMPORARY TABLE {owner_sql}.{stage_sql}
+        ON COMMIT DELETE ROWS
+        AS SELECT {select_cols}
+        FROM {target_sql}
+        WHERE 1 = 0
+        """
+    )
+    return oracle_name(stage_table)
+
+
+def merge_from_stage(
+    cur,
+    *,
+    owner: str,
+    table: str,
+    stage_table: str,
+    oracle_columns: list[str],
+    key_columns: list[str],
+) -> None:
+    key_set = {col.lower() for col in key_columns}
+    update_columns = [col for col in oracle_columns if col.lower() not in key_set]
+    if not update_columns:
+        raise ValueError("upsert needs at least one non-key column to update")
+    on_clause = " AND ".join(
+        f"t.{qident(col.upper())} = s.{qident(col.upper())}"
+        for col in key_columns
+    )
+    update_clause = ", ".join(
+        f"t.{qident(col.upper())} = s.{qident(col.upper())}"
+        for col in update_columns
+    )
+    insert_cols = ", ".join(qident(col.upper()) for col in oracle_columns)
+    insert_values = ", ".join(f"s.{qident(col.upper())}" for col in oracle_columns)
+    source_cols = ", ".join(qident(col.upper()) for col in oracle_columns)
+    cur.execute(
+        f"""
+        MERGE INTO {qident(owner.upper())}.{qident(_sql_table_name(cur, owner, table))} t
+        USING (
+            SELECT {source_cols}
+            FROM {qident(owner.upper())}.{qident(oracle_name(stage_table))}
+        ) s
+        ON ({on_clause})
+        WHEN MATCHED THEN UPDATE SET {update_clause}
+        WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_values})
+        """
+    )
 
 
 def merge_rows(

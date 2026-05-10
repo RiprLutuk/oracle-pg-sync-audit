@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     command = args[0]
     command_args = args[1:]
     rest = [*command_args, *global_args]
-    if command in {"audit", "sync"}:
+    if command in {"audit", "sync", "sync-sequences"}:
         return cli_main([*global_args, command, *command_args])
     if command == "rollback":
         return _rollback(rest)
@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _print_usage() -> None:
-    print("Usage: ops audit|sync|rollback|resume|status|circuit|circuit-breaker|watermarks|reset-watermark|validate|report|doctor ...")
+    print("Usage: ops audit|sync|sync-sequences|rollback|resume|status|circuit|circuit-breaker|watermarks|reset-watermark|validate|report|doctor ...")
     print("")
     print("Common:")
     print("  ops --env-file .env.prod doctor --config config.yaml")
@@ -81,6 +81,7 @@ def _print_usage() -> None:
     print("  ops sync --config config.yaml")
     print("  ops sync --simulate --config config.yaml")
     print("  ops sync --go --config config.yaml")
+    print("  ops sync-sequences --config config.yaml --go")
     print("  ops rollback RUN_ID --config config.yaml")
     print("  ops resume [RUN_ID] --config config.yaml")
     print("  ops status --config config.yaml")

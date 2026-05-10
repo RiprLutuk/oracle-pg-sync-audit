@@ -270,7 +270,6 @@ ops sync \
   --tables public.nama_table \
   --mode upsert \
   --key-columns id \
-  --incremental-column updated_at \
   --incremental
 ```
 

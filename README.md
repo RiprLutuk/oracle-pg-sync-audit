@@ -136,8 +136,6 @@ ops sync --config config.yaml \
   --tables public.sample_customer \
   --mode upsert \
   --key-columns customer_id \
-  --incremental-column updated_at \
-  --where "updated_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'" \
   --incremental
 ```
 

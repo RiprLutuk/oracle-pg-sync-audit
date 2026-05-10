@@ -91,6 +91,14 @@ class ReverseSyncResult:
         }
 
 
+@dataclass(frozen=True)
+class IncrementalSource:
+    expression: str
+    watermark_key: str
+    columns: tuple[str, ...] = ()
+    detected: bool = False
+
+
 class PostgresToOracleSync:
     def __init__(self, config: AppConfig, logger: logging.Logger | None = None) -> None:
         self.config = config
@@ -303,22 +311,83 @@ class PostgresToOracleSync:
                         result.message = "semua kolom termapping di-skip oleh lob_strategy"
                         return result
 
+                    incremental_source = self._resolve_incremental_source(
+                        table_cfg,
+                        table.fqname,
+                        pg_meta.columns,
+                        incremental=incremental,
+                        full_refresh=full_refresh,
+                    )
                     effective_where = _combine_where(
                         table_cfg.where,
                         self._incremental_where(
                             checkpoint_store,
                             table_cfg,
                             table.fqname,
+                            incremental_source=incremental_source,
                             incremental=incremental,
                             full_refresh=full_refresh,
                         ),
                     )
+                    incremental_enabled = incremental or table_cfg.incremental.enabled
+                    incremental_filter = self._incremental_where(
+                        checkpoint_store,
+                        table_cfg,
+                        table.fqname,
+                        incremental_source=incremental_source,
+                        incremental=incremental,
+                        full_refresh=full_refresh,
+                    )
+                    if (
+                        self.config.sync.require_incremental_filter
+                        and not full_refresh
+                        and mode in {"append", "delete", "upsert"}
+                        and not effective_where
+                    ):
+                        raise ValueError(
+                            f"Incremental/WHERE filter missing for {table.fqname}; refusing no-WHERE PostgreSQL scan. "
+                            "Set a watermark/--initial-value or disable --require-incremental-filter intentionally."
+                        )
+                    if (
+                        self.config.sync.require_source_incremental_index
+                        and incremental_enabled
+                        and incremental_source
+                        and not postgres.has_index_for_expression_or_columns(
+                            pcur,
+                            table.schema,
+                            table.table,
+                            incremental_source.expression,
+                            incremental_source.columns,
+                        )
+                    ):
+                        raise ValueError(
+                            f"Missing PostgreSQL index for incremental filter on {table.fqname}: "
+                            f"{incremental_source.expression}"
+                        )
+                    if (
+                        self.config.sync.require_target_key_index
+                        and mode == "upsert"
+                        and table_cfg.key_columns
+                        and not oracle.has_index_on_columns(
+                            ocur,
+                            owner,
+                            table.table,
+                            table_cfg.key_columns,
+                            unique=True,
+                        )
+                    ):
+                        raise ValueError(
+                            f"Missing Oracle unique index/constraint for upsert key on "
+                            f"{owner}.{table.table}: {', '.join(table_cfg.key_columns)}"
+                        )
 
                     if dry_run:
                         result.status = "DRY_RUN"
                         result.message = f"akan load {len(mapping)} kolom dari PostgreSQL ke Oracle"
                         if effective_where:
                             result.message += f"; filter: {effective_where}"
+                        if incremental_source and incremental_source.detected:
+                            result.message += f"; auto incremental: {incremental_source.expression}"
                         return result
 
                     if checkpoint_store:
@@ -422,6 +491,7 @@ class PostgresToOracleSync:
                         table.schema,
                         table.table,
                         effective_where,
+                        incremental_source=incremental_source,
                         enabled=incremental or table_cfg.incremental.enabled,
                     )
                     return result
@@ -509,6 +579,35 @@ class PostgresToOracleSync:
         rows_cursor = postgres.select_rows(pcur, pg_schema, table, pg_columns, where=where)
         total = 0
         batch_size = max(1, int(self.config.sync.batch_size or 10000))
+        if upsert_keys and self.config.sync.postgres_to_oracle_upsert_strategy == "staging_merge":
+            stage_table = oracle.prepare_global_temporary_stage(
+                ocur,
+                owner=oracle_owner,
+                target_table=table,
+                oracle_columns=oracle_columns,
+            )
+            while True:
+                rows = rows_cursor.fetchmany(batch_size)
+                if not rows:
+                    break
+                clean_rows = [tuple(_clean_value(value) for value in row) for row in rows]
+                total += oracle.insert_rows(
+                    ocur,
+                    owner=oracle_owner,
+                    table=stage_table,
+                    oracle_columns=oracle_columns,
+                    rows=clean_rows,
+                )
+            if total:
+                oracle.merge_from_stage(
+                    ocur,
+                    owner=oracle_owner,
+                    table=table,
+                    stage_table=stage_table,
+                    oracle_columns=oracle_columns,
+                    key_columns=upsert_keys,
+                )
+            return total
         while True:
             rows = rows_cursor.fetchmany(batch_size)
             if not rows:
@@ -549,34 +648,62 @@ class PostgresToOracleSync:
                 mapping.append((oracle_name_l, pg_candidate))
         return mapping
 
+    def _resolve_incremental_source(
+        self,
+        table_cfg: TableConfig,
+        table_name: str,
+        pg_columns: list[Any],
+        *,
+        incremental: bool,
+        full_refresh: bool,
+    ) -> IncrementalSource | None:
+        cfg = table_cfg.incremental
+        if full_refresh or not (incremental or cfg.enabled):
+            return None
+        if cfg.column:
+            column = str(cfg.column).lower()
+            return IncrementalSource(expression=_pg_qident(column), watermark_key=column, columns=(column,))
+        if cfg.strategy != "updated_at":
+            raise ValueError(f"Incremental enabled for {table_name} but incremental.column is empty")
+        source = _detect_incremental_source(pg_columns)
+        if not source:
+            raise ValueError(
+                f"Incremental enabled for {table_name} but no update/create timestamp column was detected"
+            )
+        self.logger.info("Auto incremental source %s: %s", table_name, source.expression)
+        return source
+
     def _incremental_where(
         self,
         checkpoint_store: CheckpointStore | None,
         table_cfg: TableConfig,
         table_name: str,
         *,
+        incremental_source: IncrementalSource | None,
         incremental: bool,
         full_refresh: bool,
     ) -> str | None:
         cfg = table_cfg.incremental
         if full_refresh or not (incremental or cfg.enabled):
             return None
-        if not cfg.column:
+        if not incremental_source:
             raise ValueError(f"Incremental enabled for {table_name} but incremental.column is empty")
         value = checkpoint_store.get_watermark(
             direction="postgres_to_oracle",
             table_name=table_name,
             strategy=cfg.strategy,
-            column_name=cfg.column,
+            column_name=incremental_source.watermark_key,
         ) if checkpoint_store else None
         value = value if value not in (None, "") else cfg.initial_value
         if value in (None, ""):
             return None
-        column = _pg_qident(cfg.column)
         if cfg.strategy == "numeric_key":
-            return f"{column} > {value}"
+            return f"{incremental_source.expression} > {value}"
         if cfg.strategy == "updated_at":
-            return f"{column} >= TIMESTAMP '{value}' - INTERVAL '{int(cfg.overlap_minutes or 0)} minutes'"
+            return (
+                f"{incremental_source.expression} >= "
+                f"TIMESTAMP '{value}' - INTERVAL '{int(cfg.overlap_minutes or 0)} minutes'"
+            )
         raise ValueError(f"Unsupported incremental strategy: {cfg.strategy}")
 
     def _update_watermark(
@@ -589,20 +716,19 @@ class PostgresToOracleSync:
         table: str,
         where: str | None,
         *,
+        incremental_source: IncrementalSource | None,
         enabled: bool,
     ) -> None:
-        if not checkpoint_store or not enabled or not table_cfg.incremental.enabled:
+        if not checkpoint_store or not enabled or not incremental_source:
             return
         cfg = table_cfg.incremental
-        if not cfg.column:
-            return
-        value = postgres.max_value(pcur, schema, table, cfg.column.lower(), where=where)
+        value = postgres.max_expression(pcur, schema, table, incremental_source.expression, where=where)
         if value is not None:
             checkpoint_store.set_watermark(
                 direction="postgres_to_oracle",
                 table_name=table_name,
                 strategy=cfg.strategy,
-                column_name=cfg.column,
+                column_name=incremental_source.watermark_key,
                 value=value,
             )
 
@@ -715,6 +841,102 @@ def _clean_value(value: Any) -> Any:
     if isinstance(value, str):
         return value.replace("\x00", "")
     return value
+
+
+_UPDATE_COLUMN_PRIORITY = [
+    "last_update_date",
+    "last_updated_date",
+    "last_update",
+    "last_updated",
+    "last_modified_date",
+    "last_modified",
+    "updated_at",
+    "update_at",
+    "updated_date",
+    "update_date",
+    "modified_at",
+    "modify_date",
+    "changed_at",
+    "change_date",
+    "last_change_date",
+]
+
+_CREATE_COLUMN_PRIORITY = [
+    "create_date",
+    "created_date",
+    "creation_date",
+    "created_at",
+    "create_at",
+    "created",
+    "create",
+    "insert_date",
+    "inserted_at",
+    "date_create",
+    "entry_date",
+]
+
+
+def _detect_incremental_source(columns: list[Any]) -> IncrementalSource | None:
+    update_col = _best_incremental_column(columns, kind="update")
+    create_col = _best_incremental_column(columns, kind="create")
+    if update_col and create_col and update_col != create_col:
+        return IncrementalSource(
+            expression=f"COALESCE({_pg_qident(update_col)}, {_pg_qident(create_col)})",
+            watermark_key=f"coalesce({update_col},{create_col})",
+            columns=(update_col, create_col),
+            detected=True,
+        )
+    if update_col:
+        return IncrementalSource(expression=_pg_qident(update_col), watermark_key=update_col, columns=(update_col,), detected=True)
+    if create_col:
+        return IncrementalSource(expression=_pg_qident(create_col), watermark_key=create_col, columns=(create_col,), detected=True)
+    return None
+
+
+def _best_incremental_column(columns: list[Any], *, kind: str) -> str | None:
+    scored: list[tuple[int, int, str]] = []
+    for column in columns:
+        name = str(getattr(column, "normalized_name", "") or getattr(column, "name", "") or "").lower()
+        if not name or not _is_temporal_column(column):
+            continue
+        score = _incremental_column_score(name, kind=kind)
+        if score <= 0:
+            continue
+        ordinal = int(getattr(column, "ordinal", 0) or 0)
+        scored.append((score, -ordinal, name))
+    if not scored:
+        return None
+    scored.sort(reverse=True)
+    return scored[0][2]
+
+
+def _incremental_column_score(name: str, *, kind: str) -> int:
+    if kind == "update":
+        if name in _UPDATE_COLUMN_PRIORITY:
+            return 1000 - _UPDATE_COLUMN_PRIORITY.index(name)
+        tokens = ("update", "updated", "modify", "modified", "change", "changed")
+        if "last" in name and any(token in name for token in tokens):
+            return 850
+        if any(token in name for token in tokens):
+            return 750
+        return 0
+    if name in _CREATE_COLUMN_PRIORITY:
+        return 1000 - _CREATE_COLUMN_PRIORITY.index(name)
+    if "creat" in name:
+        return 800
+    if "insert" in name or "entry" in name:
+        return 650
+    return 0
+
+
+def _is_temporal_column(column: Any) -> bool:
+    data_type = str(getattr(column, "data_type", "") or "").lower()
+    udt_name = str(getattr(column, "udt_name", "") or "").lower()
+    return (
+        "timestamp" in data_type
+        or data_type in {"date", "time with time zone", "time without time zone"}
+        or udt_name in {"date", "timestamp", "timestamptz", "time", "timetz"}
+    )
 
 
 def _combine_where(left: str | None, right: str | None) -> str | None:

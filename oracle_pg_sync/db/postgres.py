@@ -96,6 +96,59 @@ def max_value(cur, schema: str, table: str, column: str, where: str | None = Non
     return row[0] if row else None
 
 
+def max_expression(cur, schema: str, table: str, expression: str, where: str | None = None) -> Any:
+    statement = sql.SQL("SELECT MAX({}) FROM {}").format(sql.SQL(expression), table_ident(schema, table))
+    if where:
+        statement += sql.SQL(" WHERE ") + sql.SQL(where)
+    cur.execute(statement)
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def has_index_for_expression_or_columns(
+    cur,
+    schema: str,
+    table: str,
+    expression: str,
+    columns: list[str] | tuple[str, ...],
+) -> bool:
+    cur.execute(
+        """
+        SELECT
+            pg_get_indexdef(i.indexrelid) AS indexdef,
+            (
+                SELECT array_agg(a.attname ORDER BY ord)
+                FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
+                JOIN pg_attribute a
+                  ON a.attrelid = i.indrelid
+                 AND a.attnum = k.attnum
+                WHERE k.attnum > 0
+            ) AS indexed_columns
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = %s
+          AND c.relname = %s
+          AND i.indisvalid
+          AND i.indisready
+        """,
+        (schema, table),
+    )
+    wanted_cols = [str(col).lower() for col in columns if col]
+    normalized_expr = _normalize_index_expression(expression)
+    for indexdef, indexed_columns in cur.fetchall():
+        idx_cols = [str(col).lower() for col in (indexed_columns or [])]
+        if wanted_cols and idx_cols[: len(wanted_cols)] == wanted_cols:
+            return True
+        if normalized_expr and normalized_expr in _normalize_index_expression(str(indexdef or "")):
+            return True
+    return False
+
+
+def _normalize_index_expression(value: str) -> str:
+    return re.sub(r'["\s:]+', "", str(value or "").lower())
+
+
 def fast_count_rows(cur, schema: str, table: str) -> int | None:
     cur.execute(
         """

@@ -208,6 +208,10 @@ class SyncConfig:
     parallel_workers: int | None = None
     batch_size: int = 10000
     chunk_size: int = 50000
+    postgres_to_oracle_upsert_strategy: str = "array_merge"
+    require_incremental_filter: bool = False
+    require_source_incremental_index: bool = False
+    require_target_key_index: bool = False
     skip_on_structure_mismatch: bool = True
     build_indexes_on_staging: bool = True
     analyze_after_load: bool = True

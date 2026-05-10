@@ -38,12 +38,14 @@ direction_slug="${direction_pair##*|}"
 
 sync_args=(--mode "$MODE" --skip-dependencies)
 validate_args=(--direction "$direction")
+sequence_args=()
 table_scope="config:${CONFIG_PATH}"
 
 if [[ -n "${TABLES:-}" ]]; then
   read -r -a selected_tables <<< "$TABLES"
   sync_args+=(--tables "${selected_tables[@]}")
   validate_args+=(--tables "${selected_tables[@]}")
+  sequence_args+=(--tables "${selected_tables[@]}")
   table_scope="override:${#selected_tables[@]}"
 fi
 
@@ -51,6 +53,20 @@ log_file="$(job_log_file "daily" "$direction_slug")"
 
 echo "$(date -Is) production_cutoff start tables=$table_scope mode=$MODE" >> "$log_file"
 run_sync_job daily "$direction" "$direction_slug" "${sync_args[@]}" "$@"
+
+echo "$(date -Is) production_cutoff sync PostgreSQL sequences from Oracle" >> "$log_file"
+set +e
+timeout "$TIMEOUT_SECONDS" "$PYTHON_BIN" -m oracle_pg_sync.ops sync-sequences \
+  --config "$CONFIG_PATH" \
+  --go \
+  "${sequence_args[@]}" >> "$log_file" 2>&1
+sequence_status=$?
+set -e
+
+if [[ "$sequence_status" -ne 0 ]]; then
+  send_alert "oracle-pg-sync production_cutoff sequence sync failed exit_code=$sequence_status log=$log_file"
+  exit "$sequence_status"
+fi
 
 echo "$(date -Is) production_cutoff validate exact rowcount" >> "$log_file"
 set +e
